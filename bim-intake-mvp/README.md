@@ -9,6 +9,13 @@ npm install
 npm run dev
 ```
 
+## App Entrypoints
+
+- User portal: `/login`, then `/app/overview`, `/app/new`, `/app/tickets`
+- Admin console: `/admin/login`, then `/admin/queue`, `/admin/plan`, `/admin/workflow`
+
+The public landing page is for requesters. Admin access is intentionally a small corner link so the responsibilities stay visually separate.
+
 ## Build
 
 ```bash

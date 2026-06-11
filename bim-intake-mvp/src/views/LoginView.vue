@@ -38,6 +38,7 @@ async function submitLogin() {
 
 <template>
   <main class="login-page">
+    <router-link class="corner-link" to="/admin/login">Admin login</router-link>
     <section class="login-hero">
       <div class="login-copy">
         <el-tag effect="dark" round>New UI intake channel</el-tag>

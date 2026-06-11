@@ -59,4 +59,5 @@ export interface UserSession {
   email: string
   displayName: string
   loginAt: string
+  role: 'user' | 'admin'
 }

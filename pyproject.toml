@@ -1,0 +1,12 @@
+[project]
+name = "ai-bi-intake-assistant"
+version = "1.0.0"
+requires-python = "==3.12.*"
+dependencies = [
+  "fastapi==0.115.6",
+  "httpx==0.28.1",
+  "openai==1.58.1",
+  "pydantic==2.10.4",
+  "python-dotenv==1.0.1",
+  "uvicorn==0.34.0",
+]

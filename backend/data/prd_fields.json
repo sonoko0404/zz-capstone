@@ -1,0 +1,24 @@
+{
+  "sections": {
+    "Report title": ["report_title", "report_name"],
+    "Purpose": ["why_report_necessary", "decisions_supported", "problems_addressed", "why_requested_now", "related_customers_or_teams"],
+    "Audience": ["requester", "armada_owner", "recipients_or_access_roles", "data_story_by_recipient_role"],
+    "Frequency": ["run_frequency", "run_time_of_day"],
+    "Scope": ["scope_criteria", "existing_report_to_mimic", "filters_needed", "drilldowns_needed"],
+    "Data requirements": ["required_fields", "mockup_or_sample_available", "custom_calculations_needed", "data_sources"],
+    "Report requirements": ["display_format", "row_level_security", "metrics_kpis_charts_maps", "refresh_frequency"],
+    "Success criteria": ["accuracy_owner_or_validator", "success_definition", "expected_metric_change_or_time_savings"],
+    "Risks & assumptions": ["data_or_system_challenges", "assumptions_about_data_entry", "dependencies", "known_constraints"]
+  },
+  "minimum_groups": [
+    ["request_type"],
+    ["why_report_necessary"],
+    ["recipients_or_access_roles"],
+    ["data_sources"],
+    ["required_fields", "metrics_kpis_charts_maps"],
+    ["display_format"],
+    ["requester", "armada_owner"],
+    ["success_definition", "accuracy_owner_or_validator"]
+  ],
+  "recommended_fields": ["refresh_frequency", "row_level_security", "scope_criteria", "deadline", "data_or_system_challenges", "existing_report_to_mimic", "priority"]
+}

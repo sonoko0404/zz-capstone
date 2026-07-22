@@ -1,0 +1,155 @@
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Bot, Database, HelpCircle, RotateCcw, Send, Sparkles, UserRound, Zap } from 'lucide-react'
+import type { ChatMessage } from '../types/intake'
+import { SampleRequestButtons } from './SampleRequestButtons'
+
+interface ChatPanelProps {
+  messages: ChatMessage[]
+  samples: string[]
+  loading: boolean
+  error: string | null
+  onSend: (message: string) => Promise<void>
+  onReset: () => Promise<void>
+}
+
+export function ChatPanel({
+  messages,
+  samples,
+  loading,
+  error,
+  onSend,
+  onReset,
+}: ChatPanelProps) {
+  const [draft, setDraft] = useState('')
+  const endRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [messages, loading])
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault()
+    const message = draft.trim()
+    if (!message || loading) return
+    setDraft('')
+    await onSend(message)
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      void submit()
+    }
+  }
+
+  return (
+    <section className="panel chat-panel" aria-labelledby="chat-title">
+      <header className="panel-header chat-header">
+        <div>
+          <div className="eyebrow"><Sparkles size={13} /> Guided intake</div>
+          <h2 id="chat-title">Shape the request together</h2>
+        </div>
+        <button className="icon-button text-button" onClick={() => void onReset()} type="button">
+          <RotateCcw aria-hidden="true" size={15} />
+          New intake
+        </button>
+      </header>
+
+      <div className="chat-body" aria-live="polite">
+        {messages.map((message) => (
+          <article className={`message-row ${message.role}`} key={message.id}>
+            <div className="message-avatar" aria-hidden="true">
+              {message.role === 'assistant' ? <Bot size={17} /> : <UserRound size={17} />}
+            </div>
+            <div className="message-content">
+              <div className="message-meta">
+                {message.role === 'assistant' ? 'BI intake assistant' : 'You'}
+                {message.mode === 'draft_ticket' && <span className="message-status">Draft ready</span>}
+                {message.role === 'assistant' && message.llmProvider && (
+                  <span className={`provider-badge ${message.llmProvider}`}>
+                    {message.llmProvider === 'openai' ? 'OpenAI API' : message.llmProvider === 'deterministic' ? 'Fallback' : 'Guardrail'}
+                  </span>
+                )}
+              </div>
+              <p>{message.content}</p>
+              {message.llmProvider === 'openai' && (
+                <div className="llm-trace" title={message.llmRequestId ?? undefined}>
+                  <Zap size={12} />
+                  <span>{message.llmModel ?? 'OpenAI model'}</span>
+                  {message.llmLatencyMs !== null && message.llmLatencyMs !== undefined && <span>{message.llmLatencyMs} ms</span>}
+                  {message.llmRequestId && <code>{message.llmRequestId.slice(-10)}</code>}
+                </div>
+              )}
+              {message.llmProvider === 'deterministic' && message.fallbackReason && (
+                <div className="fallback-warning" role="status">
+                  <AlertTriangle size={13} />
+                  <span><strong>OpenAI fallback:</strong> {message.fallbackReason}</span>
+                </div>
+              )}
+              {message.contextUsed && message.contextUsed.length > 0 && (
+                <details className="context-evidence">
+                  <summary><Database size={13} /> Context used</summary>
+                  <ul>
+                    {message.contextUsed.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </details>
+              )}
+              {message.role === 'assistant' && message.questions && message.questions.length > 0 && (
+                <div className="question-stack">
+                  {message.questions.map((question) => (
+                    <div className="question-card" key={`${message.id}-${question.field}`}>
+                      <strong>{question.question}</strong>
+                      <details>
+                        <summary><HelpCircle size={12} /> Why this matters</summary>
+                        <p>{question.rationale}</p>
+                      </details>
+                      <div className="reply-chips">
+                        {question.suggested_replies.map((reply) => (
+                          <button disabled={loading} key={reply} onClick={() => void onSend(reply)} type="button">
+                            {reply}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </article>
+        ))}
+        {messages.length === 1 && (
+          <SampleRequestButtons samples={samples} disabled={loading} onSelect={(sample) => void onSend(sample)} />
+        )}
+        {loading && (
+          <div className="message-row assistant loading-message">
+            <div className="message-avatar"><Bot size={17} /></div>
+            <div className="thinking-dots" aria-label="Assistant is analyzing the intake">
+              <span /> <span /> <span />
+            </div>
+          </div>
+        )}
+        <div ref={endRef} />
+      </div>
+
+      <footer className="composer-wrap">
+        {error && <div className="inline-error" role="alert">{error}</div>}
+        <form className="composer" onSubmit={submit}>
+          <textarea
+            aria-label="Describe your BI request"
+            disabled={loading}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Describe the decision, audience, data, or report you need…"
+            rows={2}
+            value={draft}
+          />
+          <button className="send-button" disabled={!draft.trim() || loading} type="submit">
+            <Send aria-hidden="true" size={17} />
+            Send
+          </button>
+        </form>
+        <p className="composer-note">Use sanitized or aggregate data only · Enter to send, Shift + Enter for a new line</p>
+      </footer>
+    </section>
+  )
+}

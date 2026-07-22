@@ -1,0 +1,51 @@
+{
+  "source": "Static, sanitized Power BI Data Agent / Jira semantic model notes",
+  "usage_note": "Contextual hints only. This prototype has no live Power BI, Fabric, Microsoft, Armada, or Jira connection.",
+  "tables": [
+    {
+      "name": "E1_Tickets",
+      "description": "Main historical ticket-level table with ticket key, project, summary, status, assignee, assigned group, priority, created/resolved dates, application, and ticket details.",
+      "use_when": "General historical ticket questions and ticket-level analysis."
+    },
+    {
+      "name": "OpenTickets",
+      "description": "Preferred table for active backlog, demand pipeline, ticket age, assignment workload, status, project type, and size estimates.",
+      "use_when": "Questions about currently open tickets, workload, active demand, or aging."
+    },
+    {
+      "name": "E2_Linked Tickets",
+      "description": "Relationships between BIM delivery tickets and related SCP or ITO source/request tickets, including 1:1 and 1:many patterns.",
+      "use_when": "Traceability, source-request links, and downstream delivery relationships."
+    },
+    {
+      "name": "E3_Change Log",
+      "description": "Status, assignment, reassignment, and field-change history over time.",
+      "use_when": "Workflow history, bottleneck, reassignment, or status movement analysis."
+    }
+  ],
+  "terminology": {
+    "BIM": "Business Intelligence delivery or development ticket; the usual category for BI work.",
+    "SCP": "Service Catalog or product request ticket that may be a source request.",
+    "ITO": "IT Operations request ticket that may be a source request.",
+    "CC": "Another Jira project category present in the static model context.",
+    "assigned_group": "The team or queue responsible for a ticket.",
+    "assignee": "The individual assigned to a ticket."
+  },
+  "relationship_guidance": [
+    "BIM tickets are often linked downstream to SCP or ITO source/request tickets.",
+    "A BIM ticket may satisfy one source request or address multiple source tickets.",
+    "Draft previews may suggest links for traceability but never create them."
+  ],
+  "high_level_insights": [
+    "Ticket volume spans ITO, BIM, CC, and SCP; ITO appears largest in the provided sample context.",
+    "Most tickets appear to be low priority in the provided sample context.",
+    "WMS/Red Prairie and BI-Reporting appear to handle comparatively large volumes.",
+    "Some BIM tickets have long resolution times, suggesting possible process bottlenecks."
+  ],
+  "data_quality_warnings": [
+    "Assigned group may appear empty for open BIM tickets in current Data Agent results.",
+    "Sample open-ticket outputs may contain statuses that appear resolved or closed; validate status semantics before drawing conclusions.",
+    "Do not present approximate context observations as live facts or invent exact counts."
+  ]
+}
+

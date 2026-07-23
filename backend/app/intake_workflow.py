@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
-from .intake_config import EDITABLE_FIELDS, NODE_DEFINITIONS
+from .intake_config import (
+    EDITABLE_FIELDS,
+    NODE_DEFINITIONS,
+    scenario_profile,
+)
 from .models import FieldMetadata, IntakeData, RequirementNode, TranscriptMessage
 
 
@@ -35,7 +39,11 @@ def normalize_metadata(
         metadata = normalized.get(field)
         if metadata is None:
             metadata = FieldMetadata()
-        if not has_value(value) and field not in {"requester_email_unavailable", "include_chat_attachment"}:
+        if (
+            not has_value(value)
+            and field not in {"requester_email_unavailable", "include_chat_attachment"}
+            and metadata.source != "needs_confirmation"
+        ):
             metadata = FieldMetadata(confidence="n/a", source="not_provided")
         normalized[field] = metadata
     return normalized
@@ -46,14 +54,39 @@ def build_requirements_matrix(
     metadata: dict[str, FieldMetadata],
 ) -> list[RequirementNode]:
     nodes: list[RequirementNode] = []
+    profile = scenario_profile(intake.scenario_type)
     for key, display_name, fields in NODE_DEFINITIONS:
+        if key in profile.not_applicable_nodes:
+            nodes.append(RequirementNode(
+                key=key,
+                display_name=display_name,
+                fields=list(fields),
+                summary=f"Not applicable for {intake.scenario_type}",
+                status="N/A",
+                confidence="n/a",
+                source="not_provided",
+                filled_fields=0,
+                total_fields=len(fields),
+            ))
+            continue
         filled = [field for field in fields if has_value(getattr(intake, field, None))]
         field_metadata = [metadata.get(field, FieldMetadata()) for field in filled]
         if not filled:
-            status = "Missing"
-            confidence = "n/a"
-            source = "not_provided"
-            summary = "No information captured yet"
+            unresolved = [
+                metadata.get(field, FieldMetadata())
+                for field in fields
+                if metadata.get(field, FieldMetadata()).source == "needs_confirmation"
+            ]
+            if unresolved:
+                status = "Needs Confirmation"
+                confidence = "low"
+                source = "needs_confirmation"
+                summary = "Conflicting values require confirmation"
+            else:
+                status = "Missing"
+                confidence = "n/a"
+                source = "not_provided"
+                summary = "No information captured yet"
         else:
             needs_confirmation = any(
                 item.source in {"inferred", "needs_confirmation"} or item.confidence in {"low", "medium"}
@@ -105,8 +138,13 @@ def ambiguous_fields(metadata: dict[str, FieldMetadata], intake: IntakeData) -> 
     return sorted(
         field
         for field, item in metadata.items()
-        if has_value(getattr(intake, field, None))
-        and (item.source in {"inferred", "needs_confirmation"} or item.confidence == "low")
+        if (
+            item.source == "needs_confirmation"
+            or (
+                has_value(getattr(intake, field, None))
+                and (item.source == "inferred" or item.confidence == "low")
+            )
+        )
     )
 
 
@@ -116,6 +154,7 @@ def validation_eligibility(
     minimum_complete: bool,
     ambiguous: list[str],
     risks: list[str],
+    blocking_risks: list[str] | None = None,
 ) -> tuple[bool, list[str]]:
     blockers: list[str] = []
     if completion_score < 70:
@@ -131,22 +170,37 @@ def validation_eligibility(
     if not intake.priority:
         blockers.append("Priority is required.")
 
+    profile = scenario_profile(intake.scenario_type)
     blocking_fields = {
-        "why_report_necessary", "recipients_or_access_roles", "data_sources",
-        "required_fields", "metrics_kpis_charts_maps", "display_format",
-        "requester", "armada_owner", "success_definition",
-        "accuracy_owner_or_validator",
+        field
+        for _, fields in profile.required_groups
+        for field in fields
     }
     blocking_ambiguity = sorted(set(ambiguous) & blocking_fields)
     if blocking_ambiguity:
         blockers.append("Required fields need confirmation: " + ", ".join(blocking_ambiguity))
 
-    blocking_risks = [
-        risk for risk in risks
-        if any(token in risk.lower() for token in ("sensitive", "conflict", "dirty", "inconsistent", "blocked"))
-    ]
+    if blocking_risks is None:
+        blocking_risks = [
+            risk for risk in risks
+            if any(
+                token in risk.lower()
+                for token in (
+                    "sensitive",
+                    "conflict",
+                    "dirty",
+                    "inconsistent",
+                    "blocked",
+                    "rls",
+                    "feasibility",
+                    "complexity",
+                )
+            )
+        ]
     if blocking_risks:
-        blockers.append("Resolve blocking security or data-quality risks before validation.")
+        blockers.append(
+            "Resolve blocking security, data-quality, or feasibility risks before validation."
+        )
     return not blockers, blockers
 
 

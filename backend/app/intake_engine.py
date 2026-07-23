@@ -15,9 +15,21 @@ from .intake_workflow import (
     utc_now,
     validation_eligibility,
 )
+from .intake_reconciler import (
+    RiskSignal,
+    clear_risk_signals_for_field,
+    detect_live_data_query,
+    detect_multi_request,
+    recalculate_risks,
+    reconcile_turn,
+    risk_signal,
+    ticket_readiness,
+    validation_blocking_risks,
+)
 from .knowledge_base import KnowledgeBase
 from .llm_client import IntakeLLMClient, score_intake
 from .models import (
+    ClarificationQuestion,
     FieldMetadata,
     IntakeData,
     IntakeMessageResponse,
@@ -43,6 +55,7 @@ class SessionState:
     validator_name: str | None = None
     validated_at: str | None = None
     validation_note: str | None = None
+    risk_signals: dict[str, RiskSignal] = field(default_factory=dict)
 
 
 class IntakeEngine:
@@ -99,54 +112,48 @@ class IntakeEngine:
             recent_transcript=state.transcript,
             already_cited_context=state.cited_context,
         )
-        updated = result.updated_intake.model_copy(deep=True)
-
-        # A model may not silently replace manually confirmed values. Explicit
-        # corrections are applied through PATCH /api/intake/field.
-        for field_name, metadata in state.field_metadata.items():
-            if metadata.source == "user_confirmed" and field_name in EDITABLE_FIELDS:
-                setattr(updated, field_name, getattr(previous, field_name))
-
-        metadata = dict(state.field_metadata)
-        for change in result.field_metadata_updates:
-            field_name = change.field
-            if field_name not in EDITABLE_FIELDS:
-                continue
-            if metadata.get(field_name, FieldMetadata()).source == "user_confirmed":
-                continue
-            metadata[field_name] = FieldMetadata(
-                **change.model_dump(exclude={"field", "updated_at"}),
-                updated_at=change.updated_at or utc_now(),
-            )
-        state.intake = updated
-        state.field_metadata = normalize_metadata(updated, metadata)
-        state.last_question_fields = [question.field for question in result.next_questions]
-        state.validation_state = derive_validation_state(state.validation_state, result.ready_for_ticket)
+        reconciled = reconcile_turn(
+            message=message,
+            previous=previous,
+            candidate=result.updated_intake,
+            existing_metadata=state.field_metadata,
+            model_metadata_updates=result.field_metadata_updates,
+            model_questions=result.next_questions,
+            risk_signals=state.risk_signals,
+        )
+        state.intake = reconciled.intake
+        state.field_metadata = reconciled.metadata
+        state.risk_signals = reconciled.risk_signals
+        state.last_question_fields = [question.field for question in reconciled.questions]
+        state.validation_state = derive_validation_state(
+            state.validation_state,
+            reconciled.ready_for_ticket,
+        )
         if state.validation_state in {"validated", "rejected"}:
-            state.validation_state = "draft_ready" if result.ready_for_ticket else "gathering"
+            state.validation_state = "draft_ready" if reconciled.ready_for_ticket else "gathering"
             state.validator_name = None
             state.validated_at = None
             state.validation_note = None
 
         state.transcript.append(TranscriptMessage(
             role="assistant",
-            content=result.assistant_message,
+            content=reconciled.assistant_message,
             timestamp=utc_now(),
-            questions=result.next_questions,
+            questions=reconciled.questions,
         ))
-        self._refresh_ticket_drafts(state, result.ready_for_ticket)
+        self._refresh_ticket_drafts(state, reconciled.ready_for_ticket)
         return self._response(
             session_id,
             state,
-            assistant_message=result.assistant_message,
+            assistant_message=reconciled.assistant_message,
             context_used=self._novel_context(state, result.context_used),
-            mode="draft_ticket" if result.ready_for_ticket else "clarify",
+            mode="draft_ticket" if reconciled.ready_for_ticket else "clarify",
             provider=result.llm_provider,
             model=result.llm_model,
             request_id=result.llm_request_id,
             latency_ms=result.llm_latency_ms,
             fallback_reason=result.fallback_reason,
-            next_questions=result.next_questions,
+            next_questions=reconciled.questions,
         )
 
     def update_field(
@@ -177,11 +184,22 @@ class IntakeEngine:
         if field_name == "requester_email_unavailable" and value:
             state.intake.requester_email = None
         state.field_metadata = normalize_metadata(state.intake, state.field_metadata)
-        state.validation_state = "draft_ready" if score_intake(state.intake)[2] else "gathering"
+        state.risk_signals = clear_risk_signals_for_field(
+            field_name,
+            value,
+            confirmed,
+            state.risk_signals,
+        )
+        state.intake.risk_flags = recalculate_risks(
+            state.intake,
+            state.field_metadata,
+            state.risk_signals,
+        )
+        score, missing, ready = ticket_readiness(state.intake, state.risk_signals)
+        state.validation_state = "draft_ready" if ready else "gathering"
         state.validator_name = None
         state.validated_at = None
         state.validation_note = None
-        score, missing, ready = score_intake(state.intake)
         state.intake.missing_fields = missing
         state.intake.confidence_score = score / 100
         self._refresh_ticket_drafts(state, ready)
@@ -196,9 +214,16 @@ class IntakeEngine:
 
     def submit_for_validation(self, session_id: str, validator_name: str | None, note: str | None) -> IntakeMessageResponse:
         state = self.get_state(session_id)
-        score, _, ready = score_intake(state.intake)
+        score, _, ready = ticket_readiness(state.intake, state.risk_signals)
         ambiguous = ambiguous_fields(state.field_metadata, state.intake)
-        eligible, blockers = validation_eligibility(state.intake, score, ready, ambiguous, state.intake.risk_flags)
+        eligible, blockers = validation_eligibility(
+            state.intake,
+            score,
+            ready,
+            ambiguous,
+            state.intake.risk_flags,
+            validation_blocking_risks(state.risk_signals),
+        )
         if not eligible:
             raise ValueError("Cannot submit for validation: " + " ".join(blockers))
         state.validation_state = "pending_validation"
@@ -240,7 +265,10 @@ class IntakeEngine:
         state.validator_name = validator_name or state.validator_name
         state.validation_note = note or "Revision requested"
         state.validated_at = utc_now()
-        self._refresh_ticket_drafts(state, score_intake(state.intake)[2])
+        self._refresh_ticket_drafts(
+            state,
+            ticket_readiness(state.intake, state.risk_signals)[2],
+        )
         return self._response(
             session_id,
             state,
@@ -252,11 +280,17 @@ class IntakeEngine:
 
     def generate_ticket(self, session_id: str) -> TicketGenerationResponse:
         state = self.get_state(session_id)
-        score, missing, ready = score_intake(state.intake)
+        score, missing, ready = ticket_readiness(state.intake, state.risk_signals)
         state.intake.confidence_score = score / 100
         state.intake.missing_fields = missing
         if not ready:
-            raise ValueError("Complete the minimum intake fields before generating a draft: " + ", ".join(missing[:8]))
+            minimum_ready = score_intake(state.intake)[2]
+            details = (
+                "resolve conflicting or combined requests first"
+                if minimum_ready
+                else ", ".join(missing[:8])
+            )
+            raise ValueError("Complete the intake before generating a draft: " + details)
         self._refresh_ticket_drafts(state, True, force=True)
         assert state.ticket_preview is not None and state.ticket_bundle_preview is not None
         return TicketGenerationResponse(
@@ -302,7 +336,7 @@ class IntakeEngine:
         fallback_reason: str | None = None,
         next_questions: list | None = None,
     ) -> IntakeMessageResponse:
-        score, missing, ready = score_intake(state.intake)
+        score, missing, ready = ticket_readiness(state.intake, state.risk_signals)
         state.intake.missing_fields = missing
         state.intake.confidence_score = score / 100
         ambiguous = ambiguous_fields(state.field_metadata, state.intake)
@@ -312,6 +346,7 @@ class IntakeEngine:
             ready,
             ambiguous,
             state.intake.risk_flags,
+            validation_blocking_risks(state.risk_signals),
         )
         # Blockers are available as risk-style UI guidance without mutating the
         # canonical AI risk list or claiming they came from OpenAI.
@@ -353,6 +388,32 @@ class IntakeEngine:
         state: SessionState,
     ) -> IntakeMessageResponse | None:
         lower = message.lower()
+        if detect_live_data_query(message):
+            risk = "Live-data access is unavailable; this prototype uses static context only."
+            state.risk_signals["live_data_boundary"] = risk_signal(
+                "live_data_boundary",
+                risk,
+                evidence=message,
+            )
+            state.intake.risk_flags = recalculate_risks(
+                state.intake,
+                state.field_metadata,
+                state.risk_signals,
+            )
+            return self._response(
+                session_id,
+                state,
+                assistant_message=(
+                    "I cannot query live Power BI or Armada data. I only have static context descriptions. "
+                    "I can help turn this question into a BI intake request, but I did not query or change "
+                    "any enterprise system."
+                ),
+                context_used=["Static context only; no live enterprise connection."],
+                mode="context_answer",
+                provider="system",
+                model=self._llm.model_name,
+            )
+
         external_action = re.search(
             r"\b(connect|access|create|submit|send|write|push|log in|login)\b.{0,70}\b(real|live|armada|internal)\b.{0,50}\b(jira|power bi|fabric|azure|copilot)",
             lower,
@@ -362,7 +423,17 @@ class IntakeEngine:
         )
         if external_action:
             risk = "External enterprise system access is blocked in this standalone prototype."
-            state.intake.risk_flags = list(dict.fromkeys(state.intake.risk_flags + [risk]))
+            state.risk_signals["external_system_boundary"] = risk_signal(
+                "external_system_boundary",
+                risk,
+                evidence=message,
+                blocking_validation=True,
+            )
+            state.intake.risk_flags = recalculate_risks(
+                state.intake,
+                state.field_metadata,
+                state.risk_signals,
+            )
             return self._response(
                 session_id,
                 state,
@@ -378,6 +449,56 @@ class IntakeEngine:
                 mode="context_answer",
                 provider="system",
                 model=self._llm.model_name,
+            )
+
+        separate_requests = detect_multi_request(message)
+        if separate_requests:
+            state.intake.scenario_type = "Ambiguous Request"
+            state.field_metadata["scenario_type"] = FieldMetadata(
+                confidence="low",
+                source="needs_confirmation",
+                evidence=" ".join(message.split())[:280],
+                updated_at=utc_now(),
+            )
+            state.risk_signals["multi_request"] = risk_signal(
+                "multi_request",
+                "Multiple independent requests were detected; split them before drafting.",
+                evidence=message,
+                related_fields=("request_type", "scenario_type"),
+                blocking_validation=True,
+                blocking_draft=True,
+            )
+            state.intake.risk_flags = recalculate_risks(
+                state.intake,
+                state.field_metadata,
+                state.risk_signals,
+            )
+            state.validation_state = "gathering"
+            state.ticket_preview = None
+            state.ticket_bundle_preview = None
+            summaries = "\n".join(
+                f"{index}. {summary}" for index, summary in enumerate(separate_requests, start=1)
+            )
+            question = ClarificationQuestion(
+                field="request_type",
+                question="Please create separate intake sessions for these requests; which one will you submit first?",
+                rationale="Independent delivery and defect work should not be merged into one Jira draft.",
+                suggested_replies=["Start with the new BI deliverable", "Start with the existing report issue"],
+                priority=1,
+            )
+            state.last_question_fields = ["request_type"]
+            return self._response(
+                session_id,
+                state,
+                assistant_message=(
+                    "I detected two independent requests and did not merge them into one intake:\n"
+                    f"{summaries}\nPlease use New intake to submit each request separately; no draft was generated."
+                ),
+                context_used=[],
+                mode="clarify",
+                provider="system",
+                model=self._llm.model_name,
+                next_questions=[question],
             )
 
         if re.search(r"\b(what|which)\b.{0,30}\b(table|semantic model|context)\b", lower):

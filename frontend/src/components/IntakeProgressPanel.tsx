@@ -24,6 +24,13 @@ const SECTIONS = [
   { label: 'Success', fields: ['success_definition', 'accuracy_owner_or_validator'] },
 ] as const
 
+const SELF_SERVICE_SECTIONS = [
+  { label: 'Purpose', fields: ['why_report_necessary'] },
+  { label: 'Access', fields: ['requester', 'recipients_or_access_roles', 'armada_owner'] },
+  { label: 'Data scope', fields: ['data_sources', 'scope_criteria'] },
+  { label: 'Governance', fields: ['row_level_security', 'known_constraints'] },
+] as const
+
 const LABELS: Record<string, string> = {
   request_type: 'Request type',
   why_report_necessary: 'Business purpose',
@@ -38,8 +45,10 @@ const LABELS: Record<string, string> = {
   scope_criteria: 'Scope and filters',
   deadline: 'Deadline',
   data_or_system_challenges: 'Data risks',
-  existing_report_to_mimic: 'Related report',
   priority: 'Priority',
+  known_constraints: 'Known constraints / access duration',
+  existing_report_to_mimic: 'Existing report',
+  problems_addressed: 'Actual vs expected behavior',
 }
 
 export function IntakeProgressPanel({
@@ -57,6 +66,9 @@ export function IntakeProgressPanel({
   onValidation,
 }: IntakeProgressPanelProps) {
   const coreMissing = missingFields.slice(0, 5)
+  const sections = intake?.scenario_type === 'Self-Service Access'
+    ? SELF_SERVICE_SECTIONS
+    : SECTIONS
 
   return (
     <section className="panel progress-panel" aria-labelledby="progress-title">
@@ -86,7 +98,7 @@ export function IntakeProgressPanel({
       </div>
 
       <div className="section-checks" aria-label="PRD section progress">
-        {SECTIONS.map((section) => {
+        {sections.map((section) => {
           const filled = section.fields.filter((field) => Boolean(intake?.[field])).length
           const complete = filled === section.fields.length
           return (
@@ -102,11 +114,16 @@ export function IntakeProgressPanel({
       </div>
 
       {coreMissing.length > 0 && (
-        <div className="progress-list">
-          <h3>Needs attention</h3>
+        <div className={`progress-list ${readyForTicket ? 'optional' : ''}`}>
+          <h3>{readyForTicket ? 'Optional refinements' : 'Needs attention'}</h3>
           <div className="tag-list">
-            {coreMissing.map((field) => <span className="missing-tag" key={field}>{LABELS[field] ?? field.replaceAll('_', ' ')}</span>)}
+            {coreMissing.map((field) => (
+              <span className={readyForTicket ? 'optional-tag' : 'missing-tag'} key={field}>
+                {LABELS[field] ?? field.replaceAll('_', ' ')}
+              </span>
+            ))}
           </div>
+          {readyForTicket && <p className="optional-note">These details can improve planning but do not block the local draft.</p>}
         </div>
       )}
 

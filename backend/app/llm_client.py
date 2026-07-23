@@ -8,7 +8,13 @@ from time import perf_counter
 from abc import ABC, abstractmethod
 from typing import Any
 
-from .intake_config import EDITABLE_FIELDS, QUESTION_ORDER, QUESTION_SPECS
+from .intake_config import (
+    DEFAULT_RECOMMENDED_FIELDS,
+    EDITABLE_FIELDS,
+    NEW_DASHBOARD_REQUIRED,
+    question_spec,
+    scenario_profile,
+)
 from .intake_workflow import has_value, utc_now
 from .knowledge_base import KnowledgeBase
 from .models import (
@@ -25,28 +31,8 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
-MINIMUM_GROUPS: list[tuple[str, tuple[str, ...]]] = [
-    ("request_type", ("request_type",)),
-    ("why_report_necessary", ("why_report_necessary",)),
-    ("recipients_or_access_roles", ("recipients_or_access_roles",)),
-    ("data_sources", ("data_sources",)),
-    ("metrics_kpis_charts_maps", ("metrics_kpis_charts_maps", "required_fields")),
-    ("display_format", ("display_format",)),
-    ("requester_or_owner", ("requester", "armada_owner")),
-    ("success_or_validator", ("success_definition", "accuracy_owner_or_validator")),
-]
-
-RECOMMENDED_FIELDS = [
-    "refresh_frequency",
-    "row_level_security",
-    "scope_criteria",
-    "deadline",
-    "data_or_system_challenges",
-    "existing_report_to_mimic",
-    "priority",
-]
-
-QUESTION_COPY = {field: spec.question for field, spec in QUESTION_SPECS.items()}
+MINIMUM_GROUPS = list(NEW_DASHBOARD_REQUIRED)
+RECOMMENDED_FIELDS = list(DEFAULT_RECOMMENDED_FIELDS)
 
 ALLOWED_SCENARIOS = {
     "New Dashboard",
@@ -69,7 +55,13 @@ def classify_scenario(message: str, intake: IntakeData) -> str:
         r"\b(existing|current|dashboard|report)\b", lower
     ):
         return "Enhancement Request"
-    if re.search(r"\b(dashboard|report|data extract|analysis|power bi)\b", lower):
+    current = intake.scenario_type
+    if current in {"New Dashboard", "Existing Report Issue", "Enhancement Request", "Self-Service Access"}:
+        return current
+    if (
+        re.search(r"\b(dashboard|report|data extract|analysis|power bi)\b", lower)
+        or intake.request_type in {"dashboard", "report", "data extract", "metric analysis"}
+    ):
         if len(message.split()) <= 4 or not (
             intake.why_report_necessary
             or intake.decisions_supported
@@ -78,6 +70,15 @@ def classify_scenario(message: str, intake: IntakeData) -> str:
         ):
             return "Ambiguous Request"
         return "New Dashboard"
+    if current == "Ambiguous Request" and intake.request_type and (
+        intake.why_report_necessary
+        or intake.decisions_supported
+        or intake.metrics_kpis_charts_maps
+        or intake.required_fields
+    ):
+        return "New Dashboard"
+    if current in {"Ambiguous Request", "Unassigned"}:
+        return current
     if len(message.split()) <= 5:
         return "Ambiguous Request"
     return "Unassigned"
@@ -86,21 +87,48 @@ def classify_scenario(message: str, intake: IntakeData) -> str:
 def select_questions(intake: IntakeData, missing: list[str]) -> list[ClarificationQuestion]:
     """Return the highest-value unanswered business questions, never more than three."""
     missing_set = set(missing)
+    profile = scenario_profile(intake.scenario_type)
 
     def unanswered(key: str) -> bool:
+        if key == "request_type":
+            return intake.scenario_type in {"Ambiguous Request", "Unassigned"} or not intake.request_type
         if key == "success_or_validator":
             return not (intake.success_definition or intake.accuracy_owner_or_validator)
         if key == "requester_or_owner":
+            if intake.scenario_type == "Self-Service Access":
+                return not (intake.armada_owner or intake.accuracy_owner_or_validator)
             return not (intake.requester or intake.armada_owner)
         if key == "requester_email":
             return not (intake.requester_email or intake.requester_email_unavailable)
         if key == "metrics_kpis_charts_maps":
             return not (intake.metrics_kpis_charts_maps or intake.required_fields)
+        if key == "existing_report_to_mimic":
+            return not (
+                intake.existing_report_to_mimic
+                or intake.report_name
+                or intake.report_title
+            )
+        if key == "problems_addressed":
+            return not (intake.problems_addressed or intake.why_report_necessary)
         if key in {"why_report_necessary", "recipients_or_access_roles", "data_sources", "display_format"}:
             return key in missing_set or not has_value(getattr(intake, key, None))
         return not has_value(getattr(intake, key, None))
 
-    return [QUESTION_SPECS[key].model_copy(deep=True) for key in QUESTION_ORDER if unanswered(key)][:3]
+    ordered_unanswered = [key for key in profile.question_order if unanswered(key)]
+    required_keys = [
+        key
+        for key in ordered_unanswered
+        if key in missing_set
+        or (
+            key == "request_type"
+            and intake.scenario_type in {"Ambiguous Request", "Unassigned"}
+        )
+    ]
+    optional_keys = [key for key in ordered_unanswered if key not in required_keys]
+    return [
+        question_spec(intake.scenario_type, key)
+        for key in (required_keys + optional_keys)
+    ][:3]
 
 
 def metadata_for_changes(
@@ -127,6 +155,10 @@ def metadata_for_changes(
             )
         elif field == "jira_issue_type" and value == "To be confirmed by Jira integration":
             source, confidence = "needs_confirmation", "low"
+        elif field in {"metrics_kpis_charts_maps", "required_fields"} and (
+            "definitions pending" in str(value).lower()
+        ):
+            source, confidence = "needs_confirmation", "low"
         elif field == "report_title" and not re.search(r"\b(title|named|called)\b", message, re.IGNORECASE):
             source, confidence = "inferred", "medium"
         else:
@@ -145,12 +177,20 @@ def _has_value(intake: IntakeData, fields: tuple[str, ...]) -> bool:
 
 
 def score_intake(intake: IntakeData) -> tuple[int, list[str], bool]:
-    missing_minimum = [label for label, fields in MINIMUM_GROUPS if not _has_value(intake, fields)]
-    minimum_filled = len(MINIMUM_GROUPS) - len(missing_minimum)
-    recommended_missing = [field for field in RECOMMENDED_FIELDS if not getattr(intake, field)]
-    score = round((minimum_filled / len(MINIMUM_GROUPS)) * 80)
-    score += round(((len(RECOMMENDED_FIELDS) - len(recommended_missing)) / len(RECOMMENDED_FIELDS)) * 20)
-    return min(score, 100), missing_minimum + recommended_missing, not missing_minimum
+    profile = scenario_profile(intake.scenario_type)
+    groups = profile.required_groups
+    recommended = profile.recommended_fields
+    missing_minimum = [label for label, fields in groups if not _has_value(intake, fields)]
+    minimum_filled = len(groups) - len(missing_minimum)
+    recommended_missing = [field for field in recommended if not getattr(intake, field)]
+    score = round((minimum_filled / len(groups)) * 80) if groups else 80
+    score += (
+        round(((len(recommended) - len(recommended_missing)) / len(recommended)) * 20)
+        if recommended
+        else 20
+    )
+    ready = profile.can_generate_draft and not missing_minimum
+    return min(score, 100), missing_minimum + recommended_missing, ready
 
 
 def detect_risks(message: str, intake: IntakeData) -> list[str]:
@@ -222,6 +262,17 @@ class DeterministicMockLLM(IntakeLLMClient):
         updated = current.model_copy(deep=True)
         self._extract(message, updated, last_question_fields)
         updated.scenario_type = classify_scenario(message, updated)
+        if updated.scenario_type == "Existing Report Issue":
+            updated.request_type = "bug/fix"
+        elif updated.scenario_type == "Self-Service Access":
+            updated.request_type = "other"
+            updated.project_type_hint = "BIM"
+            updated.display_format = None
+            updated.metrics_kpis_charts_maps = None
+            updated.refresh_frequency = None
+            updated.run_frequency = None
+        elif updated.scenario_type == "Enhancement Request" and not updated.request_type:
+            updated.request_type = "other"
         if not updated.jira_issue_type and updated.request_type:
             updated.jira_issue_type = "To be confirmed by Jira integration"
         score, missing, ready = score_intake(updated)
@@ -285,6 +336,8 @@ class DeterministicMockLLM(IntakeLLMClient):
             if keyword in lower:
                 intake.request_type = intake.request_type or value
                 break
+        if intake.request_type == "metric analysis" and not intake.display_format:
+            intake.display_format = "Metric analysis"
 
         if "power bi" in lower:
             intake.display_format = (
@@ -299,27 +352,45 @@ class DeterministicMockLLM(IntakeLLMClient):
         elif "report" in lower:
             intake.display_format = intake.display_format or "Report"
 
-        sources = [name for name in self.SOURCE_NAMES if name.lower() in lower]
+        sources = [
+            name
+            for name in self.SOURCE_NAMES
+            if re.search(
+                rf"(?<!\w){re.escape(name.lower())}(?!\w)",
+                lower,
+            )
+        ]
         if sources:
             intake.data_sources = ", ".join(dict.fromkeys(sources))
 
         audience_patterns = [
-            r"\bfor\s+([^.,;]+?)(?=\s+to\s+|\s+using\s+|\s+within\s+|\s+by\s+|[.,;]|$)",
+            r"\bfor\s+([^.,;]+?)(?=\s+to\s+|\s+so\s+|\s+using\s+|\s+within\s+|\s+by\s+|[.,;]|$)",
             r"\bused by\s+([^.,;]+)",
             r"\baudience(?: is|:)?\s+([^.,;]+)",
+            r"(?:^|[.;]\s*)([A-Za-z][A-Za-z'& -]{1,50}?)\s+"
+            r"(?:need|needs|require|requires)\s+(?:ongoing\s+|temporary\s+)?access\b",
         ]
         for pattern in audience_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 candidate = match.group(1).strip()
+                preceding = lower[max(0, match.start() - 30):match.start()]
+                if (
+                    re.fullmatch(r"(?:\d+|one|two|three|four|five|ten|twelve)\s+roles?", candidate, re.IGNORECASE)
+                    and re.search(r"\brls\b|row[- ]level security", preceding)
+                ):
+                    continue
                 if 1 <= len(candidate.split()) <= 12:
                     intake.recipients_or_access_roles = candidate
                     break
 
         metric_patterns = [
-            r"\btrack\s+(.+?)(?=\s+from\s+|\s+using\s+|\s+within\s+|[.;]|$)",
-            r"\bshow(?:ing)?\s+(.+?)(?=\s+from\s+|\s+using\s+|[.;]|$)",
+            r"\b(?:track|analy[sz]e|monitor|measure|compare|report on)\s+"
+            r"(.+?)(?=\s+for\s+|\s+from\s+|\s+using\s+|\s+within\s+|[,.;]|$)",
+            r"\bshow(?:ing)?\s+(.+?)(?=\s+for\s+|\s+from\s+|\s+using\s+|[,.;]|$)",
             r"\bunderstand\s+(.+?)(?=[.;]|$)",
+            r"\b(?:using|include(?:s|d)?|including|with)\s+"
+            r"(.+?)\s+(?:metrics?|kpis?)\b(?=[,.;]|$)",
             r"\bmetrics?(?: are| include|:)?\s+(.+?)(?=[.;]|$)",
             r"\bkpis?(?: are| include|:)?\s+(.+?)(?=[.;]|$)",
             r"\bfields?(?: are| include|:)?\s+(.+?)(?=[.;]|$)",
@@ -328,39 +399,127 @@ class DeterministicMockLLM(IntakeLLMClient):
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 metric = match.group(1).strip(" ,")
+                for source_name in sorted(self.SOURCE_NAMES, key=len, reverse=True):
+                    metric = re.sub(
+                        rf"^{re.escape(source_name)}(?:\s+data)?\s+",
+                        "",
+                        metric,
+                        flags=re.IGNORECASE,
+                    )
+                if (
+                    "kpi" in match.group(0).lower()
+                    and re.fullmatch(
+                        r"\d+|one|two|three|four|five|ten|twenty|thirty",
+                        metric,
+                        re.IGNORECASE,
+                    )
+                ):
+                    continue
                 if metric:
                     intake.metrics_kpis_charts_maps = metric
                     intake.required_fields = intake.required_fields or metric
                     break
+        kpi_count = re.search(
+            r"\b(\d+|one|two|three|four|five|ten|twenty|thirty)\s+kpis?\b",
+            lower,
+        )
+        if kpi_count and not intake.metrics_kpis_charts_maps:
+            intake.metrics_kpis_charts_maps = (
+                f"{kpi_count.group(1).title()} KPIs (definitions pending)"
+            )
+            intake.required_fields = intake.required_fields or intake.metrics_kpis_charts_maps
 
-        deadline = re.search(r"\bwithin\s+(\d+|one|two|three|four)\s+(business\s+)?(day|week|month)s?\b", lower)
+        deadline = re.search(
+            r"\bwithin\s+(\d+|one|two|three|four)\s+"
+            r"(business\s+)?(day|week|month)s?\b",
+            lower,
+        )
         if deadline:
             intake.deadline = deadline.group(0)
-        by_date = re.search(r"\bby\s+((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}(?:,?\s+\d{4})?)", text, re.IGNORECASE)
+        relative_deadline = re.search(
+            r"\b(?:by\s+)?(tomorrow|next\s+(?:monday|tuesday|wednesday|thursday|friday)|"
+            r"eod|end of day|asap)\b",
+            lower,
+        )
+        if relative_deadline:
+            intake.deadline = relative_deadline.group(0)
+        by_date = re.search(
+            r"\bby\s+((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+            r"[a-z]*\s+\d{1,2}(?:,?\s+\d{4})?)",
+            text,
+            re.IGNORECASE,
+        )
         if by_date:
             intake.deadline = f"by {by_date.group(1)}"
 
-        refresh = re.search(r"\b(hourly|daily|weekly|monthly|quarterly|real[- ]time)\s+(?:data\s+)?refresh\b", lower)
+        cadence_pattern = r"(hourly|daily|weekly|monthly|quarterly|real[- ]time)"
+        refresh = re.search(
+            rf"\b{cadence_pattern}\s+(?:data\s+)?refresh\b",
+            lower,
+        )
         if refresh:
             intake.refresh_frequency = refresh.group(1).replace("-", " ").title()
             intake.run_frequency = intake.run_frequency or intake.refresh_frequency
-        elif re.search(r"\brefresh(?:ed)?\s+(hourly|daily|weekly|monthly|quarterly)\b", lower):
-            value = re.search(r"\brefresh(?:ed)?\s+(hourly|daily|weekly|monthly|quarterly)\b", lower)
+        elif re.search(rf"\brefresh(?:ed)?\s+{cadence_pattern}\b", lower):
+            value = re.search(rf"\brefresh(?:ed)?\s+{cadence_pattern}\b", lower)
             if value:
                 intake.refresh_frequency = value.group(1).title()
                 intake.run_frequency = intake.run_frequency or intake.refresh_frequency
+        else:
+            deliverable_cadence = re.search(
+                rf"\b{cadence_pattern}\s+(?:\w+\s+)?"
+                r"(?:dashboard|report|extract|analysis)\b",
+                lower,
+            )
+            if deliverable_cadence:
+                intake.refresh_frequency = (
+                    deliverable_cadence.group(1).replace("-", " ").title()
+                )
+                intake.run_frequency = intake.run_frequency or intake.refresh_frequency
+        if re.search(r"\bevery\s+morning\b", lower):
+            intake.refresh_frequency = "Daily"
+            intake.run_frequency = "Daily"
+            intake.run_time_of_day = "Morning"
+        if re.search(r"\bone[- ]time\s+(?:excel\s+)?extract\b", lower):
+            intake.run_frequency = "One-time"
+            intake.refresh_frequency = None
 
         if re.search(r"\b(no|without)\s+(row[- ]level security|rls)\b", lower):
             intake.row_level_security = "Not required"
         elif "row-level security" in lower or re.search(r"\brls\b", lower):
-            intake.row_level_security = "Required; role rules need confirmation"
+            role_count = re.search(r"\b(\d+)\s+roles?\b", lower)
+            intake.row_level_security = (
+                f"Required for {role_count.group(1)} roles; mappings need confirmation"
+                if role_count
+                else "Required; role rules need confirmation"
+            )
 
-        requester = re.search(r"\brequester(?: is|:)?\s+([A-Z][A-Za-z' -]{1,40})(?=[,.;]|$)", text, re.IGNORECASE)
+        requester = re.search(
+            r"\b(?:requester(?: is|:)?|requested by)\s+"
+            r"([A-Z][A-Za-z' -]{1,40}?)"
+            r"(?=\s+and\s+(?:the\s+)?(?:owner|validator|approver)\b|[,.;]|$)",
+            text,
+            re.IGNORECASE,
+        )
         if requester:
             intake.requester = requester.group(1).strip()
-        owner = re.search(r"\b(?:business |armada )?owner(?: is|:)?\s+([A-Z][A-Za-z' -]{1,40})(?=[,.;]|$)", text, re.IGNORECASE)
+        owner = re.search(
+            r"\b(?:(?:business |armada |accountable )?owner(?: is|:)?|owned by)\s+"
+            r"([A-Z][A-Za-z' -]{1,40}?)"
+            r"(?=\s+and\s+[A-Za-z' -]{1,40}\s+(?:will\s+)?validates?\b|[,.;]|$)",
+            text,
+            re.IGNORECASE,
+        )
         if owner:
             intake.armada_owner = owner.group(1).strip()
+        approval_owner = re.search(
+            r"\b(?:security|data)?\s*(?:approval owner|approver)"
+            r"(?: is|:)?\s+([A-Z][A-Za-z' -]{1,40})(?=[,.;]|$)",
+            text,
+            re.IGNORECASE,
+        )
+        if approval_owner:
+            intake.armada_owner = approval_owner.group(1).strip()
         if re.search(r"\bi(?:'m| am) the requester\b", lower):
             intake.requester = intake.requester or "Session user"
 
@@ -381,9 +540,34 @@ class DeterministicMockLLM(IntakeLLMClient):
         if re.search(r"\b(include|attach).{0,25}(chat|transcript)\b|\bchat\.txt\b", lower):
             intake.include_chat_attachment = True
 
-        validator = re.search(r"\bvalidat(?:e|ed|ion)\s+(?:by|owner is)\s+([^.,;]+)", text, re.IGNORECASE)
+        validator = re.search(
+            r"\bvalidat(?:e|ed|ion)\s+(?:by|owner is)\s+([^.,;]+)",
+            text,
+            re.IGNORECASE,
+        )
         if validator:
             intake.accuracy_owner_or_validator = validator.group(1).strip()
+        role_validator = re.search(
+            r"\b(BI lead|finance|data owner|business owner|report owner|owner)\s+"
+            r"(?:will\s+)?validates?\b(?:\s+([^.;]+))?",
+            text,
+            re.IGNORECASE,
+        )
+        named_validator = re.search(
+            r"\b([A-Z][a-z'&-]+(?:\s+[A-Z][a-z'&-]+){0,2})\s+"
+            r"(?:will\s+)?validates?\b(?:\s+([^.;]+))?",
+            text,
+        )
+        active_validator = role_validator or named_validator
+        if active_validator:
+            validator_name = active_validator.group(1).strip()
+            validation_target = (active_validator.group(2) or "the result").strip()
+            validation_statement = f"{validator_name} validates {validation_target}"
+            if validator_name.lower() == "owner":
+                intake.success_definition = intake.success_definition or validation_statement
+            else:
+                intake.accuracy_owner_or_validator = validator_name
+                intake.success_definition = intake.success_definition or validation_statement
         success = re.search(r"\bsuccess(?: means| is|:)?\s+([^.;]+)", text, re.IGNORECASE)
         if success:
             intake.success_definition = success.group(1).strip()
@@ -395,11 +579,38 @@ class DeterministicMockLLM(IntakeLLMClient):
         if "similar to" in lower or "mimic" in lower:
             mimic = re.search(r"(?:similar to|mimic)\s+(.+?)(?=[.;]|$)", text, re.IGNORECASE)
             intake.existing_report_to_mimic = mimic.group(1).strip() if mimic else text
+        existing_report = re.search(
+            r"\b(?:the|our)\s+((?:existing\s+|current\s+)?"
+            r"[^.;]{0,70}?(?:dashboard|report))\b",
+            text,
+            re.IGNORECASE,
+        )
+        if existing_report and re.search(
+            r"\b(existing|current|wrong|incorrect|broken|error|enhance|add|change|modify)\b",
+            lower,
+        ):
+            intake.existing_report_to_mimic = (
+                intake.existing_report_to_mimic
+                or existing_report.group(1).strip()
+            )
+        if re.search(
+            r"\b(broken|bug|error|incorrect|wrong|mismatch|not matching|"
+            r"stopped working|fails?)\b",
+            lower,
+        ):
+            intake.problems_addressed = intake.problems_addressed or text
 
         filter_match = re.search(r"\bfilter(?:ed|s)?\s+(?:by|to|for)\s+([^.;]+)", text, re.IGNORECASE)
         if filter_match:
             intake.filters_needed = filter_match.group(1).strip()
             intake.scope_criteria = intake.scope_criteria or f"Filtered by {filter_match.group(1).strip()}"
+        data_scope = re.search(
+            r"\b(?:data|access)\s+scope(?: is|:)?\s+([^.;]+)",
+            text,
+            re.IGNORECASE,
+        )
+        if data_scope:
+            intake.scope_criteria = data_scope.group(1).strip()
         if "drilldown" in lower or "drill-down" in lower:
             drill = re.search(r"drill-?downs?\s+(?:by|to)?\s*([^.;]+)", text, re.IGNORECASE)
             intake.drilldowns_needed = drill.group(1).strip() if drill and drill.group(1) else "Required"
@@ -414,11 +625,114 @@ class DeterministicMockLLM(IntakeLLMClient):
 
         if re.search(r"\b(dirty|noisy|duplicate|inconsistent|unreliable|mismatch)\w*\b", lower):
             intake.data_or_system_challenges = "Source data may be dirty, inconsistent, or require reconciliation."
-        if "source" in lower and ("updates monthly" in lower or "updated monthly" in lower):
-            intake.data_or_system_challenges = "Source data updates monthly."
-            intake.known_constraints = "Source update cadence is monthly."
+        source_update = re.search(
+            r"\bsource(?: data| system)?\s+"
+            r"(?:updates?|refreshes?|is updated|supports?)\s+"
+            r"(hourly|daily|weekly|monthly|quarterly|real[- ]time)\b",
+            lower,
+        )
+        if source_update:
+            source_cadence = source_update.group(1).replace("-", " ").title()
+            intake.data_or_system_challenges = (
+                f"Source data updates {source_cadence.lower()}."
+            )
+            known = re.sub(
+                r"\s*Source update cadence is unknown\.\s*",
+                " ",
+                intake.known_constraints or "",
+                flags=re.IGNORECASE,
+            ).strip()
+            intake.known_constraints = _append_detail(
+                known or None,
+                f"Source update cadence is {source_cadence.lower()}.",
+            )
+        if re.search(
+            r"\b(?:do not|don't)\s+know\s+(?:how often|when)\s+"
+            r"(?:the\s+)?source(?:\s+system)?\s+(?:updates|refreshes)\b",
+            lower,
+        ):
+            intake.known_constraints = _append_detail(
+                intake.known_constraints,
+                "Source update cadence is unknown.",
+            )
+        source_count = re.search(
+            r"\b(\d+|three|four|five|six|seven|eight|nine|ten)\s+"
+            r"(?:source systems?|data sources?)\b",
+            lower,
+        )
+        if source_count:
+            intake.known_constraints = _append_detail(
+                intake.known_constraints,
+                f"{source_count.group(1).title()} source systems are required; "
+                "specific systems are not yet identified.",
+            )
+        if "custom calculations" in lower:
+            intake.custom_calculations_needed = "Required; definitions pending"
+        if re.search(
+            r"\b(mvp|phase[ds]?|phased delivery|reduced scope|"
+            r"scope reduced|prioriti[sz]ed|staged delivery)\b",
+            lower,
+        ):
+            intake.scope_criteria = _append_detail(
+                intake.scope_criteria,
+                f"Feasibility mitigation: {text}",
+            )
+        if "opentickets" in lower and re.search(
+            r"\bresolved\b.{0,80}\b(open|active|opentickets)\b|"
+            r"\b(open|active|opentickets)\b.{0,80}\bresolved\b",
+            lower,
+        ):
+            intake.data_or_system_challenges = _append_detail(
+                intake.data_or_system_challenges,
+                "OpenTickets contains a Resolved versus active/open status inconsistency.",
+            )
+        if "opentickets" in lower and re.search(
+            r"\bassigned groups?\b.{0,40}\b(blank|empty|missing)\b|"
+            r"\b(blank|empty|missing)\b.{0,40}\bassigned groups?\b",
+            lower,
+        ):
+            intake.data_or_system_challenges = _append_detail(
+                intake.data_or_system_challenges,
+                "Assigned group values are blank in some OpenTickets records.",
+            )
+        if re.search(
+            r"\b(data quality|duplicates?|inconsisten(?:cy|cies)|reconciliation)\b"
+            r".{0,60}\b(resolved|reconciled|removed|confirmed)\b",
+            lower,
+        ):
+            intake.data_or_system_challenges = (
+                "Data-quality reconciliation and validation approach confirmed."
+            )
+        if re.search(
+            r"\b(active[- ]ticket definition|assigned[- ]group treatment)\b"
+            r".{0,60}\b(validated|confirmed|resolved)\b",
+            lower,
+        ):
+            intake.data_or_system_challenges = (
+                "OpenTickets status and assigned-group reconciliation confirmed."
+            )
+        access_duration = re.search(
+            r"\b(?:access\s+)?(?:for|lasting)\s+"
+            r"(\d+\s+(?:days?|weeks?|months?)|ongoing|permanent(?:ly)?)\b",
+            lower,
+        )
+        if not access_duration:
+            access_duration = re.search(
+                r"\b(ongoing|permanent|temporary)\s+access\b",
+                lower,
+            )
+        if access_duration and (
+            "access" in lower or intake.scenario_type == "Self-Service Access"
+        ):
+            intake.known_constraints = _append_detail(
+                intake.known_constraints,
+                f"Access duration: {access_duration.group(1)}.",
+            )
 
-        if not intake.why_report_necessary and len(text.split()) >= 5 and re.search(r"\b(need|create|understand|analy|track|show)\w*\b", lower):
+        if not intake.why_report_necessary and len(text.split()) >= 5 and re.search(
+            r"\b(need|build|create|understand|analy|track|show|access|monitor|measure)\w*\b",
+            lower,
+        ):
             intake.why_report_necessary = text
         if not intake.report_title and (intake.metrics_kpis_charts_maps or intake.request_type):
             core = intake.metrics_kpis_charts_maps or intake.request_type or "BI request"
@@ -443,14 +757,40 @@ class DeterministicMockLLM(IntakeLLMClient):
         elif field == "metrics_kpis_charts_maps" and not intake.metrics_kpis_charts_maps:
             intake.metrics_kpis_charts_maps = text
             intake.required_fields = text
-        elif field == "requester_or_owner" and not (intake.requester or intake.armada_owner):
+        elif field in {"requester_or_owner", "requester"} and not (
+            intake.requester or intake.armada_owner
+        ):
             intake.requester = text
-        elif field == "success_or_validator" and not (intake.success_definition or intake.accuracy_owner_or_validator):
+        elif field == "armada_owner" and not intake.armada_owner:
+            intake.armada_owner = text
+        elif field in {"success_or_validator", "success_definition"} and not (
+            intake.success_definition or intake.accuracy_owner_or_validator
+        ):
             intake.success_definition = text
         elif field == "why_report_necessary" and not intake.why_report_necessary:
             intake.why_report_necessary = text
+        elif field == "scope_criteria" and not intake.scope_criteria:
+            intake.scope_criteria = text
+        elif field == "known_constraints" and not intake.known_constraints:
+            intake.known_constraints = (
+                f"Access duration/constraint: {text}"
+                if intake.scenario_type == "Self-Service Access"
+                else text
+            )
+        elif field == "existing_report_to_mimic" and not intake.existing_report_to_mimic:
+            intake.existing_report_to_mimic = text
+        elif field == "problems_addressed" and not intake.problems_addressed:
+            intake.problems_addressed = text
         elif field == "display_format" and not intake.display_format:
             intake.display_format = text
+        elif field == "refresh_frequency" and not intake.refresh_frequency:
+            cadence = re.search(
+                r"\b(hourly|daily|weekly|monthly|quarterly|real[- ]time)\b",
+                lower,
+            )
+            if cadence:
+                intake.refresh_frequency = cadence.group(1).replace("-", " ").title()
+                intake.run_frequency = intake.run_frequency or intake.refresh_frequency
         elif field == "request_type" and not intake.request_type:
             intake.request_type = lower
 
@@ -527,6 +867,11 @@ class OpenAIIntakeLLM(IntakeLLMClient):
         )
         preprocessed = preprocessed_result.updated_intake
         already_cited = already_cited_context or []
+        active_profile = scenario_profile(preprocessed.scenario_type)
+        profile_required = [
+            {"label": label, "fields": list(fields)}
+            for label, fields in active_profile.required_groups
+        ]
         system = f"""You are a concise guided intake assistant for BI, report, dashboard, data extract, and metric-analysis requests.
 Return a response that strictly matches the provided structured-output schema.
 
@@ -548,6 +893,11 @@ Rules:
 - Do not invent Jira project configuration, Jira Issue Type values, relationship types, Armada policies, source fields, or ticket IDs. Use "To be confirmed by Jira integration" for unknown Jira configuration.
 - Treat the following as static context, not live facts:
 {knowledge.prompt_context()}
+
+Active scenario: {preprocessed.scenario_type or "Unassigned"}
+Server-owned required groups for this scenario: {json.dumps(profile_required)}
+Server-owned question order: {json.dumps(active_profile.question_order)}
+Do not ask dashboard KPI, display-format, or refresh questions for Self-Service Access.
 """
         user_payload: dict[str, Any] = {
             "message": message,
@@ -685,6 +1035,14 @@ def _fallback_reason(exc: Exception) -> str:
     if details:
         parts.append(details)
     return ": ".join(parts)
+
+
+def _append_detail(existing: str | None, detail: str) -> str:
+    if not existing:
+        return detail
+    if detail.lower() in existing.lower():
+        return existing
+    return f"{existing.rstrip()} {detail}"
 
 
 def create_llm_client() -> IntakeLLMClient:

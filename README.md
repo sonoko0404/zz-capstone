@@ -9,9 +9,9 @@ The prototype runs outside Armada's Microsoft and Jira environment. It does not 
 - React + TypeScript + Vite presentation-ready workbench
 - FastAPI backend with Pydantic validation and CORS for local development
 - Multi-turn, in-memory intake sessions
-- Full canonical PRD-shaped intake state, separate scenario classification, and completion scoring
+- Full canonical PRD-shaped intake state with scenario-specific scoring and field applicability
 - Field-level confidence, source, evidence, and manual confirmation metadata
-- Focused 1–3 question clarification behavior with rationale and suggested-reply chips
+- Scenario-specific 1–3 question clarification behavior with rationale and suggested-reply chips
 - Searchable/filterable 13-node Requirements Matrix with inline editing
 - Full timestamped session transcript and optional sanitized `chat.txt` attachment draft
 - Human validation workflow: gathering → draft ready → pending validation → validated/rejected
@@ -19,6 +19,8 @@ The prototype runs outside Armada's Microsoft and Jira environment. It does not 
 - Optional OpenAI-compatible structured output with deterministic fallback
 - Adapter-neutral ticket generator and `MockJiraAdapter`
 - Dual ITO + BIM Jira blueprint, proposed traceability relationship, clipboard copy, and JSON export
+- Self-service semantic-model access blueprint using mock ITO access + BIM enablement/security-review drafts
+- Structured feasibility, complexity, cadence, security, and data-quality validation signals
 - Seven repeatable stress-test scenarios
 - Automated tests for extraction, ticket generation, stress behavior, and the Jira adapter contract
 
@@ -63,6 +65,8 @@ Do not place Jira API calls in routes, `IntakeEngine`, `TicketGenerator`, or fro
 ## Jira ticket-bundle payload contract
 
 The primary handoff contract is a two-ticket blueprint: an ITO intake/request draft and a BIM BI-delivery draft. Requester name and email are written into both descriptions. Unknown Jira configuration is represented explicitly as `To be confirmed by Jira integration`; the prototype does not invent project keys, Issue Type values, relationship types, or enterprise fields.
+
+For `Self-Service Access`, the same unchanged bundle schema is used: ITO describes the access/source request and BIM describes BI enablement, dataset suitability, and security review. Metrics, display format, and refresh are rendered as `Not applicable — self-service access`. These are still local drafts and do not grant permission.
 
 ```json
 {
@@ -211,7 +215,7 @@ Never put `OPENAI_API_KEY` in `frontend/.env`, frontend code, browser storage, o
 
 ## LLM behavior and fallback
 
-When `OPENAI_API_KEY` is present, `backend/app/llm_client.py` sends the current intake, recent transcript, field metadata, safety rules, and static business context to the OpenAI Chat Completions API. It uses strict Structured Outputs with a Pydantic response model, then recomputes scoring, readiness, risks, and validation eligibility server-side. Obvious fields are pre-extracted deterministically before the model call so multi-turn state is stable.
+When `OPENAI_API_KEY` is present, `backend/app/llm_client.py` sends the current intake, recent transcript, field metadata, active scenario profile, safety rules, and static business context to the OpenAI Chat Completions API. It uses strict Structured Outputs with a Pydantic response model. The server then reconciles canonical fields, chooses questions from the active profile, and recomputes scoring, readiness, risks, and validation eligibility. Obvious fields are pre-extracted deterministically before the model call so multi-turn state is stable.
 
 The API and UI make every call observable:
 
@@ -224,10 +228,10 @@ OpenAI strict schemas cannot use dynamic-key objects. The model therefore return
 
 If the key is absent—or if the API returns invalid output, a network error, quota error, or any other failure—the same request is processed by the deterministic engine. Existing intake state is preserved. The fallback is never silent: each intake response reports `llm_provider`, `llm_model`, `llm_request_id`, `llm_latency_ms`, and `fallback_reason`, and the frontend displays the active mode beside every assistant message. The fallback:
 
-- extracts common deliverables, audiences, source systems, metrics, owners, deadlines, refresh cadence, RLS, priorities, and linked-ticket hints;
-- scores required and recommended fields;
-- asks up to three prioritized questions;
-- flags missing sources, owners, success criteria, RLS decisions, cadence conflicts, dirty data, sensitive data, and user fatigue;
+- extracts common deliverables, audiences, source systems, validators, metrics, owners, relative deadlines, requested/source cadence, RLS, priorities, and linked-ticket hints;
+- scores scenario-specific required and recommended fields;
+- asks up to three scenario-appropriate or risk-resolution questions;
+- flags missing fields, source-cadence gaps, unrealistic deadline/complexity combinations, OpenTickets inconsistencies, dirty data, sensitive data, and user fatigue;
 - generates a draft only after all minimum field groups are present.
 
 ## API endpoints
@@ -248,22 +252,19 @@ If the key is absent—or if the API returns invalid output, a network error, qu
 | `GET` | `/api/stress-test/scenarios` | Scenario catalog used by the UI |
 | `POST` | `/api/stress-test/run` | Run a repeatable scenario through the same engine |
 
-## Completion logic
+## Scenario profiles and completion logic
 
-The minimum groups are worth 80% of the score:
+Required groups contribute 80% of the score and recommended fields contribute 20%. The active profile controls both readiness and question order:
 
-1. Request type
-2. Business purpose
-3. Audience/access roles
-4. Data source
-5. Required metrics or fields
-6. Display format
-7. Requester or owner
-8. Success definition or validation owner
+- **New Dashboard** requires purpose, audience, source, metrics/fields, format, requester/owner, and success/validator.
+- **Existing Report Issue** requires the affected report, expected-versus-actual problem, affected audience, source, owner, and validator.
+- **Enhancement Request** requires the existing report, bounded change, affected audience, source impact, owner, and acceptance/validator.
+- **Self-Service Access** requires user/role, semantic model or dataset, business purpose, data scope, and security/data approval owner. Metrics, display format, and refresh are not applicable.
+- **Ambiguous Request** and **Unassigned** cannot draft until the workflow is classified.
 
-Recommended fields make up the remaining 20%: refresh cadence, RLS, scope, deadline, data risks, related report, and priority. A ticket bundle can be drafted when all minimum groups are complete; recommended gaps remain visible for refinement.
+When all required groups are complete, the assistant stops asking chat questions and enables the local draft. Remaining recommended gaps are shown as **Optional refinements** and remain editable in the Requirements Matrix.
 
-Human validation is a separate gate. Submission requires at least 70%, all minimum groups, requester/owner, requester email or an explicit unavailable marker, Jira Issue Type or the explicit integration placeholder, priority, no ambiguity in blocking fields, and no unresolved sensitive/conflicting/dirty-data risk. Validation never submits Jira tickets; it only changes local session state.
+Human validation is a separate gate. Submission requires at least 70%, the active profile's required groups, requester/owner, requester email or an explicit unavailable marker, Jira Issue Type or the explicit integration placeholder, priority, no ambiguity in blocking fields, and no unresolved structured security, data-quality, cadence, deadline, or complexity signal. Feasibility risks may appear in a draft but must be mitigated before human validation. Validation never submits Jira tickets; it only changes local session state.
 
 ## Stress tests
 

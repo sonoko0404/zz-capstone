@@ -36,6 +36,7 @@ class SessionState:
     field_metadata: dict[str, FieldMetadata] = field(default_factory=empty_metadata)
     last_question_fields: list[str] = field(default_factory=list)
     transcript: list[TranscriptMessage] = field(default_factory=list)
+    cited_context: list[str] = field(default_factory=list)
     ticket_preview: TicketPreview | None = None
     ticket_bundle_preview: JiraTicketBundlePreview | None = None
     validation_state: str = "gathering"
@@ -96,6 +97,7 @@ class IntakeEngine:
             last_question_fields=state.last_question_fields,
             field_metadata=state.field_metadata,
             recent_transcript=state.transcript,
+            already_cited_context=state.cited_context,
         )
         updated = result.updated_intake.model_copy(deep=True)
 
@@ -137,7 +139,7 @@ class IntakeEngine:
             session_id,
             state,
             assistant_message=result.assistant_message,
-            context_used=result.context_used,
+            context_used=self._novel_context(state, result.context_used),
             mode="draft_ticket" if result.ready_for_ticket else "clarify",
             provider=result.llm_provider,
             model=result.llm_model,
@@ -369,7 +371,10 @@ class IntakeEngine:
                     "Fabric, Azure, or Copilot Studio. I can structure the request and prepare local ITO/BIM "
                     "drafts only; no external action will be taken."
                 ),
-                context_used=["Static context only; no live enterprise connection."],
+                context_used=self._novel_context(
+                    state,
+                    ["Static context only; no live enterprise connection."],
+                ),
                 mode="context_answer",
                 provider="system",
                 model=self._llm.model_name,
@@ -384,12 +389,32 @@ class IntakeEngine:
                     "backlog and aging, E2_Linked Tickets for BIM → SCP/ITO traceability, and E3_Change Log for "
                     "status or assignment history. These are descriptions only—not a live Power BI connection."
                 ),
-                context_used=["Static semantic model table descriptions."],
+                context_used=self._novel_context(
+                    state,
+                    ["Static semantic model table descriptions."],
+                ),
                 mode="context_answer",
                 provider="system",
                 model=self._llm.model_name,
             )
         return None
+
+    @staticmethod
+    def _novel_context(state: SessionState, candidates: list[str]) -> list[str]:
+        """Return only citations not already shown in this session, then record them."""
+        seen = {item.casefold() for item in state.cited_context}
+        novel: list[str] = []
+        for item in candidates:
+            text = " ".join(item.split())
+            if not text:
+                continue
+            key = text.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            novel.append(text)
+        state.cited_context.extend(novel)
+        return novel
 
     @staticmethod
     def _coerce_field_value(field_name: str, value: Any) -> Any:

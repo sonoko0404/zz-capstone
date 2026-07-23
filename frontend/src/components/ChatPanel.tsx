@@ -22,6 +22,7 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
   const endRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
@@ -33,6 +34,22 @@ export function ChatPanel({
     if (!message || loading) return
     setDraft('')
     await onSend(message)
+  }
+
+  function appendSuggestedReply(reply: string) {
+    const trimmed = draft.trim()
+    const next = !trimmed
+      ? reply
+      : trimmed.endsWith(',')
+        ? `${trimmed} ${reply}`
+        : `${trimmed}, ${reply}`
+    setDraft(next)
+    requestAnimationFrame(() => {
+      const field = composerRef.current
+      if (!field) return
+      field.focus()
+      field.setSelectionRange(next.length, next.length)
+    })
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -105,7 +122,12 @@ export function ChatPanel({
                       </details>
                       <div className="reply-chips">
                         {question.suggested_replies.map((reply) => (
-                          <button disabled={loading} key={reply} onClick={() => void onSend(reply)} type="button">
+                          <button
+                            disabled={loading}
+                            key={reply}
+                            onClick={() => appendSuggestedReply(reply)}
+                            type="button"
+                          >
                             {reply}
                           </button>
                         ))}
@@ -140,6 +162,7 @@ export function ChatPanel({
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Describe the decision, audience, data, or report you need…"
+            ref={composerRef}
             rows={2}
             value={draft}
           />
@@ -148,7 +171,9 @@ export function ChatPanel({
             Send
           </button>
         </form>
-        <p className="composer-note">Use sanitized or aggregate data only · Enter to send, Shift + Enter for a new line</p>
+        <p className="composer-note">
+          Click suggested replies to add them here · Separate answers with commas · Enter to send
+        </p>
       </footer>
     </section>
   )

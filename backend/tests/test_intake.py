@@ -46,3 +46,42 @@ def test_power_bi_data_agent_is_captured_as_static_context_source() -> None:
     assert result.updated_intake.data_sources == "Power BI Data Agent"
     assert result.updated_intake.display_format == "Power BI dashboard"
     assert any("no live connection" in item.lower() for item in result.context_used)
+
+
+def test_session_context_citations_are_not_repeated() -> None:
+    from app.intake_engine import IntakeEngine
+    from app.mock_jira import MockJiraAdapter
+    from app.ticket_generator import TicketGenerator
+
+    engine = IntakeEngine(
+        DeterministicMockLLM(),
+        KnowledgeBase(),
+        TicketGenerator(MockJiraAdapter()),
+    )
+    session_id = "context-dedupe"
+
+    first = engine.process_message(
+        session_id,
+        "Create a Power BI dashboard and also look at open backlog aging.",
+    )
+    second = engine.process_message(
+        session_id,
+        "The audience is sales managers.",
+    )
+    third = engine.process_message(
+        session_id,
+        "We also need bottleneck analysis for tickets that take long to resolve.",
+    )
+
+    assert first.context_used
+    assert "BIM is the likely delivery category for BI/report work." in first.context_used
+    assert any("OpenTickets" in item for item in first.context_used)
+
+    # Follow-up with no new context keywords should not re-show prior citations.
+    assert second.context_used == []
+
+    # A later turn can still introduce newly relevant citations.
+    assert third.context_used
+    assert any("E3_Change Log" in item for item in third.context_used)
+    assert "BIM is the likely delivery category for BI/report work." not in third.context_used
+    assert not any("OpenTickets" in item for item in third.context_used)

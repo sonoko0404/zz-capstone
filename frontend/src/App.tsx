@@ -3,7 +3,7 @@ import { BookOpen, BrainCircuit, FlaskConical, MessageSquareText, ShieldCheck } 
 import { api } from './api/client'
 import { ChatPanel } from './components/ChatPanel'
 import { ContextPanel } from './components/ContextPanel'
-import { IntakeProgressPanel } from './components/IntakeProgressPanel'
+import { InsightSidebar } from './components/InsightSidebar'
 import { RequirementsMatrix } from './components/RequirementsMatrix'
 import { StressTestPanel } from './components/StressTestPanel'
 import { TicketPreviewCard } from './components/TicketPreviewCard'
@@ -19,7 +19,6 @@ import type {
   StressTestResult,
   TicketPreview,
   RequirementNode,
-  ValidationState,
 } from './types/intake'
 
 const GREETING: ChatMessage = {
@@ -47,19 +46,12 @@ export function App() {
   const [scenarios, setScenarios] = useState<ScenarioSummary[]>([])
   const [stressResult, setStressResult] = useState<StressTestResult | null>(null)
   const [contextOpen, setContextOpen] = useState(false)
+  const [insightsOpen, setInsightsOpen] = useState(false)
   const [loading, setLoading] = useState(false)
-  const [generating, setGenerating] = useState(false)
   const [savingField, setSavingField] = useState(false)
   const [runningId, setRunningId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [stressError, setStressError] = useState<string | null>(null)
-  const [completionScore, setCompletionScore] = useState(0)
-  const [missingFields, setMissingFields] = useState<string[]>([])
-  const [riskFlags, setRiskFlags] = useState<string[]>([])
-  const [readyForTicket, setReadyForTicket] = useState(false)
-  const [validationReady, setValidationReady] = useState(false)
-  const [validationState, setValidationState] = useState<ValidationState>('gathering')
-  const [validationNote, setValidationNote] = useState<string | null>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -116,13 +108,6 @@ export function App() {
     setFieldMetadata(response.field_metadata)
     setRequirements(response.requirements_matrix)
     setAmbiguousFields(response.ambiguous_fields)
-    setCompletionScore(response.completion_score)
-    setMissingFields(response.missing_fields)
-    setRiskFlags(response.risk_flags)
-    setReadyForTicket(response.ready_for_ticket)
-    setValidationReady(response.validation_ready)
-    setValidationState(response.validation_state)
-    setValidationNote(response.validation_note)
   }
 
   async function sendMessage(message: string) {
@@ -152,31 +137,10 @@ export function App() {
       setFieldMetadata({})
       setRequirements([])
       setAmbiguousFields([])
-      setCompletionScore(0)
-      setMissingFields([])
-      setRiskFlags([])
-      setReadyForTicket(false)
-      setValidationReady(false)
-      setValidationState('gathering')
-      setValidationNote(null)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Could not reset the intake.')
     } finally {
       setLoading(false)
-    }
-  }
-
-  async function generateTicket() {
-    setGenerating(true)
-    setError(null)
-    try {
-      const preview = await api.generateTicket(sessionId)
-      setTicket(preview.ticket_preview)
-      setTicketBundle(preview.ticket_bundle_preview)
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Could not prepare the draft.')
-    } finally {
-      setGenerating(false)
     }
   }
 
@@ -191,18 +155,6 @@ export function App() {
       throw requestError
     } finally {
       setSavingField(false)
-    }
-  }
-
-  async function validationAction(action: 'submit' | 'approve' | 'reject') {
-    setGenerating(true)
-    setError(null)
-    try {
-      applyResponse(await api.validationAction(sessionId, action))
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Could not update validation state.')
-    } finally {
-      setGenerating(false)
     }
   }
 
@@ -256,14 +208,9 @@ export function App() {
         </div>
       </header>
 
-      <div className="prototype-banner">
-        <span>Prototype boundary</span>
-        Static semantic-model context · No sensitive uploads · No enterprise write-back
-      </div>
-
       <main>
         {view === 'intake' ? (
-          <div className="intake-workspace">
+          <div className={`intake-workspace ${insightsOpen ? 'insights-open' : 'insights-collapsed'}`}>
             <ChatPanel
               error={error}
               loading={loading}
@@ -272,31 +219,21 @@ export function App() {
               onSend={sendMessage}
               samples={samples}
             />
-            <aside className="insight-column">
-              <IntakeProgressPanel
-                completionScore={completionScore}
-                generating={generating}
-                hasTicket={ticket !== null}
-                intake={intake}
-                missingFields={missingFields}
-                onGenerate={generateTicket}
-                onValidation={validationAction}
-                readyForTicket={readyForTicket}
-                riskFlags={riskFlags}
-                validationNote={validationNote}
-                validationReady={validationReady}
-                validationState={validationState}
-              />
-              <RequirementsMatrix
-                ambiguousFields={ambiguousFields}
-                intake={intake}
-                metadata={fieldMetadata}
-                nodes={requirements}
-                onEdit={updateField}
-                saving={savingField}
-              />
-              <TicketPreviewCard bundle={ticketBundle} ticket={ticket} />
-            </aside>
+            <InsightSidebar onOpenChange={setInsightsOpen} open={insightsOpen}>
+              <div id="explainable-requirements">
+                <RequirementsMatrix
+                  ambiguousFields={ambiguousFields}
+                  intake={intake}
+                  metadata={fieldMetadata}
+                  nodes={requirements}
+                  onEdit={updateField}
+                  saving={savingField}
+                />
+              </div>
+              <div id="ticket-draft">
+                <TicketPreviewCard bundle={ticketBundle} ticket={ticket} />
+              </div>
+            </InsightSidebar>
           </div>
         ) : (
           <StressTestPanel

@@ -189,6 +189,7 @@ class IntakeLLMClient(ABC):
         last_question_fields: list[str],
         field_metadata: dict[str, FieldMetadata] | None = None,
         recent_transcript: list[TranscriptMessage] | None = None,
+        already_cited_context: list[str] | None = None,
     ) -> LLMIntakeResult:
         raise NotImplementedError
 
@@ -214,8 +215,9 @@ class DeterministicMockLLM(IntakeLLMClient):
         last_question_fields: list[str],
         field_metadata: dict[str, FieldMetadata] | None = None,
         recent_transcript: list[TranscriptMessage] | None = None,
+        already_cited_context: list[str] | None = None,
     ) -> LLMIntakeResult:
-        del field_metadata, recent_transcript
+        del field_metadata, recent_transcript, already_cited_context
         before = current.model_dump()
         updated = current.model_copy(deep=True)
         self._extract(message, updated, last_question_fields)
@@ -454,10 +456,20 @@ class DeterministicMockLLM(IntakeLLMClient):
 
     def _context_used(self, message: str, intake: IntakeData) -> list[str]:
         lower = message.lower()
-        context = ["BIM is the likely delivery category for BI/report work."]
+        context: list[str] = []
+        # Only cite BIM when the turn is about delivery/reporting work, not on every reply.
+        # Session-level dedupe in IntakeEngine still suppresses repeats across turns.
+        if (
+            intake.request_type
+            or re.search(r"\bbi\b", lower)
+            or any(token in lower for token in ("dashboard", "report", "power bi", "intake", "ticket", "jira"))
+        ):
+            context.append("BIM is the likely delivery category for BI/report work.")
         if "open" in lower or "backlog" in lower:
             context.append("OpenTickets is preferred for active backlog and ticket-age questions.")
-        if "link" in lower or intake.linked_ticket_hint:
+        if "link" in lower or (
+            intake.linked_ticket_hint and any(token in lower for token in ("link", "scp", "ito", "trace"))
+        ):
             context.append("E2_Linked Tickets describes BIM → SCP/ITO traceability.")
         if "long" in lower or "bottleneck" in lower or "resolve" in lower:
             context.append("E3_Change Log supports workflow and bottleneck analysis.")
@@ -499,6 +511,7 @@ class OpenAIIntakeLLM(IntakeLLMClient):
         last_question_fields: list[str],
         field_metadata: dict[str, FieldMetadata] | None = None,
         recent_transcript: list[TranscriptMessage] | None = None,
+        already_cited_context: list[str] | None = None,
     ) -> LLMIntakeResult:
         # Seed obvious fields deterministically before the model call. This keeps
         # multi-turn state stable while the OpenAI model handles interpretation,
@@ -510,8 +523,10 @@ class OpenAIIntakeLLM(IntakeLLMClient):
             last_question_fields,
             field_metadata,
             recent_transcript,
+            already_cited_context,
         )
         preprocessed = preprocessed_result.updated_intake
+        already_cited = already_cited_context or []
         system = f"""You are a concise guided intake assistant for BI, report, dashboard, data extract, and metric-analysis requests.
 Return a response that strictly matches the provided structured-output schema.
 
@@ -527,6 +542,7 @@ Rules:
 - Speak naturally to the business user. Do not mention confidence scores, raw field names, project_type_hint, extraction mechanics, or JSON.
 - "Power BI Data Agent" means the provided static semantic-model context. It may be recorded as a data source/context descriptor, but never describe it as a live connection.
 - BIM is normally the delivery category for BI work. E2 links may suggest BIM to SCP/ITO traceability.
+- context_used must list only newly relevant static-context notes for THIS turn. Do not repeat items from already_cited_context. If nothing new applies, return an empty list.
 - Never claim live access to or action in Armada, Jira, Power BI, Fabric, Azure, or Copilot Studio.
 - Never claim a real ticket was created. Recommend sanitized/aggregate data for sensitive requests.
 - Do not invent Jira project configuration, Jira Issue Type values, relationship types, Armada policies, source fields, or ticket IDs. Use "To be confirmed by Jira integration" for unknown Jira configuration.
@@ -537,6 +553,7 @@ Rules:
             "message": message,
             "current_intake": preprocessed.model_dump(),
             "last_question_fields": last_question_fields,
+            "already_cited_context": already_cited,
             "field_metadata": {
                 key: value.model_dump() for key, value in (field_metadata or {}).items()
             },
@@ -647,6 +664,7 @@ Rules:
                 last_question_fields,
                 field_metadata,
                 recent_transcript,
+                already_cited_context,
             )
             return fallback.model_copy(update={
                 "llm_model": self._model,

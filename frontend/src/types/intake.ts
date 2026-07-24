@@ -74,7 +74,7 @@ export interface RequirementNode {
   summary: string
   status: 'Filled' | 'Missing' | 'Needs Confirmation' | 'N/A'
   requirement_level: 'required' | 'optional' | 'n/a'
-  required_fields: string[]
+  required_groups: string[][]
   confidence: FieldConfidence
   source: FieldSource
   filled_fields: number

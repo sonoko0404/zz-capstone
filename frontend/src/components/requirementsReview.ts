@@ -23,7 +23,8 @@ export interface ReviewSection {
   label: string
   nodes: RequirementNode[]
   fields: ReviewField[]
-  summaryLines: string[]
+  /** Compact field labels shown while the section is collapsed. */
+  previewLabels: string[]
   needsAttention: boolean
   blockingCount: number
   attentionCount: number
@@ -82,11 +83,52 @@ function fieldState(
   return 'complete'
 }
 
-function usefulSummary(summary: string) {
-  return summary
-    && summary !== 'No information captured yet'
-    && !summary.startsWith('Not applicable for')
-    && summary !== 'Conflicting values require confirmation'
+const FIELD_PREVIEW_LABELS: Record<string, string> = {
+  why_report_necessary: 'Business problem',
+  decisions_supported: 'Decision supported',
+  problems_addressed: 'Problem addressed',
+  recipients_or_access_roles: 'Audience',
+  requester: 'Requester',
+  armada_owner: 'Owner',
+  run_frequency: 'Reporting frequency',
+  refresh_frequency: 'Refresh frequency',
+  deadline: 'Deadline',
+  scope_criteria: 'Scope',
+  filters_needed: 'Filters',
+  existing_report_to_mimic: 'Existing report',
+  row_level_security: 'Row-level security',
+  data_sources: 'Data source',
+  required_fields: 'Required fields',
+  metrics_kpis_charts_maps: 'Metrics',
+  display_format: 'Output format',
+  report_title: 'Report title',
+  success_definition: 'Success criteria',
+  accuracy_owner_or_validator: 'Validator',
+  data_or_system_challenges: 'Risks',
+  assumptions_about_data_entry: 'Assumptions',
+  known_constraints: 'Constraints',
+}
+
+function previewLabelFor(field: string) {
+  return FIELD_PREVIEW_LABELS[field]
+    ?? field.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function sectionPreviewLabels(fields: ReviewField[]) {
+  const ranked = [...fields]
+    .filter((field) => field.state !== 'n/a')
+    .sort((left, right) => (
+      Number(right.needsAttention) - Number(left.needsAttention)
+      || Number(right.required) - Number(left.required)
+      || Number(hasValue(right.value)) - Number(hasValue(left.value))
+    ))
+  const labels: string[] = []
+  for (const field of ranked) {
+    const label = previewLabelFor(field.field)
+    if (!labels.includes(label)) labels.push(label)
+    if (labels.length >= 2) break
+  }
+  return labels
 }
 
 export function groupRequirementNodes(
@@ -103,14 +145,22 @@ export function groupRequirementNodes(
       .filter((node): node is RequirementNode => Boolean(node))
     const fields = sectionNodes.flatMap((node) => node.fields.map((field): ReviewField => {
       const value = intake?.[field as keyof IntakeData]
-      const required = (node.required_fields ?? []).includes(field)
+      const requiredGroups = (node.required_groups ?? [])
+        .filter((group) => group.includes(field))
+      const required = requiredGroups.length > 0
+      const hasUnsatisfiedRequiredGroup = requiredGroups.some((group) => (
+        !group.some((groupField) => hasValue(intake?.[groupField as keyof IntakeData]))
+      ))
       const state = fieldState(
         node,
         value,
         metadata[field],
         ambiguousFields.includes(field),
       )
-      const needsAttention = state === 'needs-confirmation' || (required && state === 'missing')
+      const needsAttention = (
+        state === 'needs-confirmation'
+        || (state === 'missing' && hasUnsatisfiedRequiredGroup)
+      )
       return {
         field,
         node,
@@ -122,19 +172,23 @@ export function groupRequirementNodes(
       }
     }))
     const applicableFields = fields.filter((field) => field.state !== 'n/a')
-    const summaryLines = sectionNodes
-      .map((node) => node.summary)
-      .filter(usefulSummary)
-      .slice(0, 2)
+    const requiredGroups = Array.from(new Map(
+      sectionNodes
+        .flatMap((node) => node.required_groups ?? [])
+        .map((group) => [JSON.stringify(group), group] as const),
+    ).values())
+    const blockingGroups = requiredGroups.filter((group) => (
+      !group.some((field) => hasValue(intake?.[field as keyof IntakeData]))
+    ))
 
     return {
       key: definition.key,
       label: definition.label,
       nodes: sectionNodes,
       fields,
-      summaryLines,
+      previewLabels: sectionPreviewLabels(fields),
       needsAttention: fields.some((field) => field.needsAttention),
-      blockingCount: fields.filter((field) => field.required && field.needsAttention).length,
+      blockingCount: blockingGroups.length,
       attentionCount: fields.filter((field) => field.needsAttention).length,
       completedCount: applicableFields.filter((field) => field.state === 'complete').length,
       applicableCount: applicableFields.length,
@@ -161,24 +215,36 @@ export function buildAiSummary(
   attentionSections: string[],
 ) {
   if (!intake) {
-    return 'Describe the business need in the conversation. The review will organize requirements and surface what needs attention.'
+    return 'Describe the business need in the conversation. Requirements will appear here as they are extracted, with gaps called out for review.'
   }
 
-  const audience = intake.recipients_or_access_roles || 'The business team'
-  const output = intake.display_format || intake.request_type || 'a BI deliverable'
+  const audience = intake.recipients_or_access_roles
+  const output = intake.display_format || 'dashboard'
   const metric = intake.metrics_kpis_charts_maps || intake.required_fields
   const source = intake.data_sources
+  const cadence = intake.refresh_frequency || intake.run_frequency
   const purpose = intake.why_report_necessary || intake.decisions_supported
-  const request = [
-    `${audience} need ${output.toLowerCase()}`,
-    metric ? `tracking ${metric}` : null,
-    source ? `from ${source}` : null,
-    purpose ? `to ${purpose.replace(/[.!]+$/, '').replace(/^to\s+/i, '')}` : null,
-  ].filter(Boolean).join(' ')
+
+  let request: string
+  if (audience && metric && source) {
+    request = `${audience} need a ${output.toLowerCase()} tracking ${metric} from ${source}`
+  } else if (audience && purpose) {
+    request = `${audience} need a ${output.toLowerCase()} to ${purpose.replace(/[.!]+$/, '').replace(/^to\s+/i, '')}`
+  } else if (purpose) {
+    request = `This request is for a ${output.toLowerCase()} to ${purpose.replace(/[.!]+$/, '').replace(/^to\s+/i, '')}`
+  } else if (audience) {
+    request = `${audience} need a ${output.toLowerCase()}`
+  } else {
+    request = `This request is for a ${output.toLowerCase()}`
+  }
+  if (cadence && !attentionSections.includes('Frequency')) {
+    request += ` with ${cadence.toLowerCase()} refresh`
+  }
+
   const gapLabels = joinLabels(attentionSections.slice(0, 2))
   const gap = gapLabels
-    ? ` The request still needs ${gapLabels} before BI review.`
-    : ' The request has the information needed for BI review.'
+    ? ` The request is missing ${gapLabels.toLowerCase()} before it can move to BI review.`
+    : ' The request looks ready for BI review.'
 
   return `${request.replace(/\s+/g, ' ').trim().replace(/[.!]+$/, '')}.${gap}`
 }
@@ -189,6 +255,12 @@ export function deriveReviewMilestone(state: ReviewWorkflowState): ReviewMilesto
   }
   if (state.validationState === 'validated') {
     return { title: 'BI Validation Complete', detail: 'Ready for submission' }
+  }
+  if (state.validationState === 'rejected') {
+    return {
+      title: 'Revision Required',
+      detail: 'Address the reviewer feedback before resubmitting',
+    }
   }
   if (state.validationState === 'pending_validation') {
     return { title: 'BI Review in Progress', detail: 'Awaiting reviewer decision' }
@@ -206,6 +278,10 @@ export function deriveReviewMilestone(state: ReviewWorkflowState): ReviewMilesto
     title: 'AI Intake in Progress',
     detail: `${Math.max(0, Math.round(state.completionScore))}% review progress`,
   }
+}
+
+export function canConfirmRequirement(validationState: ValidationState) {
+  return validationState !== 'pending_validation' && validationState !== 'validated'
 }
 
 function normalizeEvidence(value: string) {

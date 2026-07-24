@@ -20,6 +20,7 @@ import type {
 } from '../types/intake'
 import {
   buildAiSummary,
+  canConfirmRequirement,
   deriveReviewMilestone,
   groupRequirementNodes,
   type ReviewField,
@@ -113,6 +114,7 @@ export function RequirementsMatrix({
   const [draft, setDraft] = useState('')
   const [editError, setEditError] = useState<string | null>(null)
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({})
+  const seenAttentionSections = useRef<Set<string>>(new Set())
 
   const sections = useMemo(
     () => groupRequirementNodes(nodes, intake, metadata, ambiguousFields),
@@ -127,7 +129,7 @@ export function RequirementsMatrix({
     const query = search.trim().toLowerCase()
     const matchesSearch = !query || [
       section.label,
-      ...section.summaryLines,
+      ...section.previewLabels,
       ...section.fields.flatMap((field) => [
         labelFor(field.field),
         displayValue(field.value),
@@ -148,12 +150,21 @@ export function RequirementsMatrix({
     validationState,
     hasDraft,
   })
-  const blockingCount = sections.reduce((total, section) => total + section.blockingCount, 0)
+  const attentionItemCount = attentionSections.reduce((total, section) => total + section.attentionCount, 0)
   const aiSummary = buildAiSummary(intake, attentionSections.map((section) => section.label))
+  const attentionKeySignature = attentionSections.map((section) => section.key).join('|')
 
   useEffect(() => {
-    setOpenSections(new Set(attentionSections.map((section) => section.key)))
-  }, [attentionSections.map((section) => section.key).join('|')])
+    const currentAttention = new Set(attentionKeySignature.split('|').filter(Boolean))
+    setOpenSections((current) => {
+      const next = new Set(current)
+      currentAttention.forEach((key) => {
+        if (!seenAttentionSections.current.has(key)) next.add(key)
+      })
+      return next
+    })
+    seenAttentionSections.current = currentAttention
+  }, [attentionKeySignature])
 
   function filteredFields(fields: ReviewField[]) {
     if (activeFilter === 'required') return fields.filter((field) => field.required)
@@ -174,7 +185,10 @@ export function RequirementsMatrix({
   function focusSection(key: string) {
     setOpenSections((current) => new Set(current).add(key))
     requestAnimationFrame(() => {
-      sectionRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      sectionRefs.current[key]?.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        block: 'nearest',
+      })
     })
   }
 
@@ -228,8 +242,8 @@ export function RequirementsMatrix({
         <div className="review-milestone">
           <strong>{milestone.title}</strong>
           <span>
-            {blockingCount > 0
-              ? `${blockingCount} required item${blockingCount === 1 ? '' : 's'} need attention`
+            {attentionItemCount > 0
+              ? `${attentionItemCount} item${attentionItemCount === 1 ? '' : 's'} still need confirmation`
               : milestone.detail}
           </span>
         </div>
@@ -310,19 +324,14 @@ export function RequirementsMatrix({
                 </span>
                 <span className="review-section-heading">
                   <strong>{section.label}</strong>
-                  <small>
-                    {section.summaryLines.length > 0
-                      ? section.summaryLines.join(' · ')
-                      : section.nodes.map((node) => node.display_name).join(' · ')}
-                  </small>
+                  {section.previewLabels.length > 0 && (
+                    <small>{section.previewLabels.join(' · ')}</small>
+                  )}
                 </span>
-                {section.attentionCount > 0 && (
-                  <span className="review-section-count">{section.attentionCount} to review</span>
-                )}
-                {section.attentionCount === 0 && section.applicableCount > 0 && (
-                  <span className="review-section-count quiet">
-                    {section.completedCount}/{section.applicableCount}
-                  </span>
+                {section.attentionCount > 0 ? (
+                  <span className="review-section-count">{section.attentionCount}</span>
+                ) : (
+                  <span className="review-section-count quiet" aria-hidden="true" />
                 )}
                 <ChevronDown className="review-chevron" size={15} />
               </button>
@@ -331,17 +340,28 @@ export function RequirementsMatrix({
                 <div className="review-fields">
                   {fields.map((field) => {
                     const confirmed = field.metadata?.source === 'user_confirmed'
-                    const hasEvidence = Boolean(field.metadata?.evidence || field.metadata?.source)
+                    const evidence = field.metadata?.evidence
+                    const hasEvidence = Boolean(evidence)
+                    const conversationEvidence = (
+                      evidence
+                      && evidence !== 'Edited in the Requirements Matrix'
+                      && evidence !== 'Edited in Requirements Review'
+                        ? evidence
+                        : null
+                    )
                     return (
                       <div
-                        className={`review-field ${field.state}${field.required ? ' required' : ' optional'}`}
+                        className={`review-field ${field.state.replace('/', '-')}${field.required ? ' required' : ' optional'}${field.needsAttention ? ' attention' : ''}`}
                         key={`${field.node.key}-${field.field}`}
                       >
                         <div className="review-field-main">
                           <div className="review-field-copy">
                             <div className="review-field-label">
                               <strong>{labelFor(field.field)}</strong>
-                              <span>{field.required ? 'Required' : field.state === 'n/a' ? 'Not applicable' : 'Optional'}</span>
+                              {(field.needsAttention || !field.required) && field.state !== 'n/a' && (
+                                <span>{field.required ? 'Required' : 'Optional'}</span>
+                              )}
+                              {field.state === 'n/a' && <span>Not applicable</span>}
                             </div>
                             <p>{displayValue(field.value)}</p>
                             {field.needsAttention && (
@@ -349,10 +369,16 @@ export function RequirementsMatrix({
                                 {field.state === 'missing' ? 'Missing' : 'Needs confirmation'}
                               </small>
                             )}
-                            {confirmed && <small className="review-field-confirmed"><Check size={11} /> Confirmed</small>}
+                            {confirmed && !field.needsAttention && (
+                              <small className="review-field-confirmed"><Check size={11} /> Confirmed</small>
+                            )}
                           </div>
                           <div className="review-field-actions">
-                            {!confirmed && field.state !== 'missing' && field.state !== 'n/a' && (
+                            {!confirmed
+                              && canConfirmRequirement(validationState)
+                              && field.state !== 'missing'
+                              && field.state !== 'n/a'
+                              && (
                               <button
                                 aria-label={`Confirm ${labelFor(field.field)}`}
                                 disabled={saving}
@@ -362,7 +388,7 @@ export function RequirementsMatrix({
                               >
                                 <Check size={14} />
                               </button>
-                            )}
+                              )}
                             <button
                               aria-label={`Edit ${labelFor(field.field)}`}
                               disabled={field.state === 'n/a'}
@@ -385,16 +411,16 @@ export function RequirementsMatrix({
 
                         {hasEvidence && field.state !== 'n/a' && (
                           <details className="review-evidence">
-                            <summary><Eye size={12} /> Evidence</summary>
+                            <summary><Eye size={12} /> Show evidence</summary>
                             <div>
-                              {field.metadata?.evidence && <q>{field.metadata.evidence}</q>}
-                              <span>
-                                {field.metadata?.source
-                                  ? field.metadata.source.replaceAll('_', ' ')
-                                  : 'Source unavailable'}
-                              </span>
-                              {field.metadata?.evidence && onViewEvidence && (
-                                <button onClick={() => onViewEvidence(field.metadata?.evidence ?? '')} type="button">
+                              {evidence && (
+                                <>
+                                  <span className="review-evidence-label">Extracted from</span>
+                                  <q>{evidence}</q>
+                                </>
+                              )}
+                              {conversationEvidence && onViewEvidence && (
+                                <button onClick={() => onViewEvidence(conversationEvidence)} type="button">
                                   View in conversation
                                 </button>
                               )}
@@ -479,7 +505,7 @@ export function RequirementsMatrix({
           if (event.target === event.currentTarget) setEditingField(null)
         }}>
           <div aria-labelledby="edit-field-title" aria-modal="true" className="field-modal" role="dialog">
-            <header><div><span>Review requirement</span><h3 id="edit-field-title">{labelFor(editingField)}</h3></div><button aria-label="Close editor" onClick={() => setEditingField(null)} type="button"><X size={16} /></button></header>
+            <header><div><span>Edit requirement</span><h3 id="edit-field-title">{labelFor(editingField)}</h3></div><button aria-label="Close editor" onClick={() => setEditingField(null)} type="button"><X size={16} /></button></header>
             <p>Manual edits are marked <strong>user confirmed</strong> and protected from later model overwrites.</p>
             {BOOLEAN_FIELDS.has(editingField) ? (
               <select onChange={(event) => setDraft(event.target.value)} value={draft || 'false'}><option value="false">No</option><option value="true">Yes</option></select>
@@ -501,3 +527,6 @@ export function RequirementsMatrix({
     </section>
   )
 }
+
+/** Preferred name for the review workspace panel. */
+export const RequirementsReview = RequirementsMatrix

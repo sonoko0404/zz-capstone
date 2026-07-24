@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { IntakeData, RequirementNode } from '../types/intake'
 import {
   buildAiSummary,
+  canConfirmRequirement,
   deriveReviewMilestone,
   groupRequirementNodes,
   messageMatchesEvidence,
@@ -13,7 +14,7 @@ function node(overrides: Partial<RequirementNode> & Pick<RequirementNode, 'key' 
     summary: 'No information captured yet',
     status: 'Missing',
     requirement_level: 'optional',
-    required_fields: [],
+    required_groups: [],
     confidence: 'n/a',
     source: 'not_provided',
     filled_fields: 0,
@@ -92,13 +93,36 @@ describe('groupRequirementNodes', () => {
         fields: ['recipients_or_access_roles'],
         status: 'Needs Confirmation',
         requirement_level: 'required',
-        required_fields: ['recipients_or_access_roles'],
+        required_groups: [['recipients_or_access_roles']],
       }),
     ], intake({ recipients_or_access_roles: 'Sales managers' }), {}, ['recipients_or_access_roles'])
 
     expect(sections[0].label).toBe('Audience')
     expect(sections[0].needsAttention).toBe(true)
     expect(sections.find((section) => section.label === 'Purpose')?.needsAttention).toBe(false)
+  })
+
+  it('does not block on a missing alternative when its required group is satisfied', () => {
+    const sections = groupRequirementNodes([
+      node({
+        key: 'audience',
+        display_name: 'Audience',
+        fields: ['requester', 'armada_owner'],
+        status: 'Filled',
+        requirement_level: 'required',
+        required_groups: [['requester', 'armada_owner']],
+        filled_fields: 1,
+        total_fields: 2,
+      }),
+    ], intake({ requester: 'Maya Chen' }), {}, [])
+
+    const audience = sections.find((section) => section.label === 'Audience')
+    const missingOwner = audience?.fields.find((field) => field.field === 'armada_owner')
+
+    expect(audience?.blockingCount).toBe(0)
+    expect(audience?.needsAttention).toBe(false)
+    expect(missingOwner?.required).toBe(true)
+    expect(missingOwner?.needsAttention).toBe(false)
   })
 })
 
@@ -117,7 +141,30 @@ describe('buildAiSummary', () => {
     expect(summary).toContain('Sales managers')
     expect(summary).toContain('weekly unit sales')
     expect(summary).toContain('Salesforce')
-    expect(summary).toContain('Frequency and Success Criteria')
+    expect(summary).toContain('frequency and success criteria')
+    expect(summary).toContain('before it can move to BI review')
+  })
+})
+
+describe('section preview labels', () => {
+  it('shows lightweight field labels for collapsed sections', () => {
+    const sections = groupRequirementNodes([
+      node({
+        key: 'purpose',
+        display_name: 'Purpose',
+        fields: ['why_report_necessary', 'decisions_supported'],
+        status: 'Filled',
+        requirement_level: 'required',
+        required_groups: [['why_report_necessary', 'decisions_supported']],
+        filled_fields: 2,
+        total_fields: 2,
+      }),
+    ], intake({
+      why_report_necessary: 'Reduce manual reporting',
+      decisions_supported: 'Prioritize follow-ups',
+    }), {}, [])
+
+    expect(sections[0].previewLabels).toEqual(['Business problem', 'Decision supported'])
   })
 })
 
@@ -145,6 +192,28 @@ describe('deriveReviewMilestone', () => {
       validationState: 'draft_ready',
       hasDraft: true,
     }).title).toBe('Ready for BI Review')
+  })
+
+  it('surfaces a rejected review as requiring revision', () => {
+    expect(deriveReviewMilestone({
+      hasIntake: true,
+      completionScore: 92,
+      readyForTicket: true,
+      validationReady: false,
+      validationState: 'rejected',
+      hasDraft: true,
+    })).toEqual({
+      title: 'Revision Required',
+      detail: 'Address the reviewer feedback before resubmitting',
+    })
+  })
+})
+
+describe('canConfirmRequirement', () => {
+  it('prevents confirmation from silently changing an active review decision', () => {
+    expect(canConfirmRequirement('pending_validation')).toBe(false)
+    expect(canConfirmRequirement('validated')).toBe(false)
+    expect(canConfirmRequirement('draft_ready')).toBe(true)
   })
 })
 

@@ -5,25 +5,27 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from .intake_engine import IntakeEngine
 from .knowledge_base import KnowledgeBase
 from .llm_client import create_llm_client
-from .mock_jira import MockJiraAdapter
 from .models import (
+    AttachmentListResponse,
     FieldPatchRequest,
     GenerateTicketRequest,
     IntakeMessageResponse,
     LLMStatusResponse,
     MessageRequest,
+    RemoveAttachmentRequest,
     ResetRequest,
     StressTestRequest,
     StressTestResponse,
     TicketGenerationResponse,
     ValidationActionRequest,
 )
+from .real_jira import build_jira_adapter
 from .stress_tests import run_stress_test, scenario_catalog
 from .ticket_generator import TicketGenerator
 
@@ -38,7 +40,7 @@ load_dotenv(BACKEND_ROOT / ".env", override=dotenv_override)
 app = FastAPI(
     title="AI BI Intake Assistant API",
     version="1.0.0",
-    description="Standalone PRD-guided BI intake with static context and mock-only Jira drafts.",
+    description="Standalone PRD-guided BI intake with static context and optional real Jira ticket creation.",
 )
 
 origins = [
@@ -59,12 +61,9 @@ app.add_middleware(
 
 knowledge = KnowledgeBase()
 
-# JIRA INTEGRATION HANDOFF:
-# Keep this dependency typed as JiraAdapter/TicketGenerator. A future teammate may
-# instantiate RealJiraAdapter here after an enterprise security review. Nothing in
-# the frontend or IntakeEngine should change. ENABLE_REAL_JIRA is intentionally
-# ignored today so this prototype can never make a real Jira call.
-jira_adapter = MockJiraAdapter()
+# Jira adapter injection point: Mock by default; RealJiraAdapter when
+# ENABLE_REAL_JIRA=true and JIRA_* credentials are present in backend/.env.
+jira_adapter = build_jira_adapter()
 ticket_generator = TicketGenerator(jira_adapter)
 engine = IntakeEngine(create_llm_client(), knowledge, ticket_generator)
 
@@ -101,6 +100,9 @@ def intake_message(request: MessageRequest) -> IntakeMessageResponse:
     try:
         return engine.process_message(request.session_id, request.message)
     except Exception as exc:
+        import logging
+
+        logging.getLogger("uvicorn.error").exception("Unhandled intake error")
         state = engine.get_state(request.session_id)
         return IntakeMessageResponse(
             session_id=request.session_id,
@@ -115,7 +117,7 @@ def intake_message(request: MessageRequest) -> IntakeMessageResponse:
             mode="error",
             llm_provider="system",
             llm_model=engine.llm_status().model,
-            fallback_reason=f"Unhandled intake error: {type(exc).__name__}",
+            fallback_reason=f"Unhandled intake error: {type(exc).__name__}: {exc}",
         )
 
 
@@ -163,6 +165,33 @@ def generate_ticket(request: GenerateTicketRequest) -> TicketGenerationResponse:
         return engine.generate_ticket(request.session_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/intake/attachments", response_model=AttachmentListResponse)
+async def upload_intake_attachment(
+    session_id: str = Form(...),
+    file: UploadFile = File(...),
+) -> AttachmentListResponse:
+    payload = await file.read()
+    try:
+        return engine.add_user_attachment(
+            session_id,
+            filename=file.filename or "upload.bin",
+            content_type=file.content_type or "application/octet-stream",
+            content=payload,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/api/intake/attachments", response_model=AttachmentListResponse)
+def remove_intake_attachment(request: RemoveAttachmentRequest) -> AttachmentListResponse:
+    try:
+        return engine.remove_user_attachment(request.session_id, request.filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/stress-test/run", response_model=StressTestResponse)

@@ -111,6 +111,16 @@ export interface AttachmentDraft {
   content: string
   included: boolean
   uploaded: boolean
+  content_encoding?: 'utf-8' | 'base64'
+  size_bytes?: number
+  source?: 'chat' | 'user'
+}
+
+export interface AttachmentListResponse {
+  session_id: string
+  attachments: AttachmentDraft[]
+  ticket_preview: TicketPreview | null
+  ticket_bundle_preview: JiraTicketBundlePreview | null
 }
 
 export interface JiraTicketDraftPreview {
@@ -147,15 +157,16 @@ export interface JiraTicketBundlePreview {
 export interface TicketGenerationResponse extends TicketPreview {
   ticket_preview: TicketPreview
   ticket_bundle_preview: JiraTicketBundlePreview
+  pending_attachments?: AttachmentDraft[]
 }
 
 export type ResponseMode = 'clarify' | 'draft_ticket' | 'context_answer' | 'error'
-export type LLMProvider = 'openai' | 'deterministic' | 'system'
+export type LLMProvider = 'openai' | 'claude' | 'deterministic' | 'system'
 export type ValidationState = 'gathering' | 'draft_ready' | 'pending_validation' | 'validated' | 'rejected'
 
 export interface LLMRuntimeStatus {
   configured: boolean
-  provider: 'openai' | 'deterministic'
+  provider: 'openai' | 'claude' | 'deterministic'
   model: string | null
   message: string
 }
@@ -169,6 +180,7 @@ export interface IntakeResponse {
   ready_for_ticket: boolean
   ticket_preview: TicketPreview | null
   ticket_bundle_preview: JiraTicketBundlePreview | null
+  pending_attachments?: AttachmentDraft[]
   field_metadata: Record<string, FieldMetadata>
   ambiguous_fields: string[]
   next_questions: ClarificationQuestion[]

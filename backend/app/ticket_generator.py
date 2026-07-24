@@ -25,6 +25,18 @@ def _items(value: str | None, fallback: str = "To be confirmed") -> list[str]:
     return parts or [fallback]
 
 
+def redact_bundle_preview(preview: JiraTicketBundlePreview) -> JiraTicketBundlePreview:
+    """Strip attachment bodies from API-facing ticket previews."""
+    return preview.model_copy(update={
+        "ito_ticket": preview.ito_ticket.model_copy(update={
+            "attachments": [item.public_view() for item in preview.ito_ticket.attachments],
+        }),
+        "bim_ticket": preview.bim_ticket.model_copy(update={
+            "attachments": [item.public_view() for item in preview.bim_ticket.attachments],
+        }),
+    })
+
+
 class TicketGenerator:
     """Builds adapter-neutral payloads, then delegates ticket creation behavior."""
 
@@ -164,6 +176,7 @@ class TicketGenerator:
         intake: IntakeData,
         transcript: list[TranscriptMessage],
         validation_state: str,
+        extra_attachments: list[AttachmentDraft] | None = None,
     ) -> JiraTicketBundlePayload:
         """Build the stable, adapter-neutral ITO intake + BIM delivery blueprint."""
         is_self_service = intake.scenario_type == "Self-Service Access"
@@ -178,11 +191,18 @@ class TicketGenerator:
         labels = list(dict.fromkeys(intake.jira_labels))
         attachments: list[AttachmentDraft] = []
         if intake.include_chat_attachment:
+            chat = sanitized_transcript_text(transcript)
             attachments.append(AttachmentDraft(
-                content=sanitized_transcript_text(transcript),
+                content=chat,
                 included=True,
                 uploaded=False,
+                content_encoding="utf-8",
+                size_bytes=len(chat.encode("utf-8")),
+                source="chat",
             ))
+        for item in extra_attachments or []:
+            if item.included and item.content:
+                attachments.append(item.model_copy(deep=True))
 
         ito_description = "\n".join([
             "REQUEST INTAKE (DRAFT)",
@@ -298,19 +318,27 @@ class TicketGenerator:
         intake: IntakeData,
         transcript: list[TranscriptMessage],
         validation_state: str,
+        extra_attachments: list[AttachmentDraft] | None = None,
     ) -> JiraTicketBundlePreview:
-        payload = self.build_bundle_payload(intake, transcript, validation_state)
+        payload = self.build_bundle_payload(
+            intake,
+            transcript,
+            validation_state,
+            extra_attachments=extra_attachments,
+        )
         result = self._jira_adapter.create_ticket_bundle(payload)
-        return JiraTicketBundlePreview(
+        return redact_bundle_preview(JiraTicketBundlePreview(
             ito_ticket=JiraTicketDraftPreview(
                 **result.payload.ito_ticket.model_dump(),
                 draft_ticket_key=result.ito_ticket_key,
+                created=result.created,
                 status=result.status,
                 disclaimer=result.message,
             ),
             bim_ticket=JiraTicketDraftPreview(
                 **result.payload.bim_ticket.model_dump(),
                 draft_ticket_key=result.bim_ticket_key,
+                created=result.created,
                 status=result.status,
                 disclaimer=result.message,
             ),
@@ -319,7 +347,7 @@ class TicketGenerator:
             created=result.created,
             status=result.status,
             disclaimer=result.message,
-        )
+        ))
 
     def legacy_preview_from_bundle(
         self,

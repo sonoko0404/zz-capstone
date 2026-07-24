@@ -16,7 +16,7 @@ The prototype runs outside Armada's Microsoft and Jira environment. It does not 
 - Full timestamped session transcript and optional sanitized `chat.txt` attachment draft
 - Human validation workflow: gathering → draft ready → pending validation → validated/rejected
 - Static semantic-model knowledge base for `E1_Tickets`, `OpenTickets`, `E2_Linked Tickets`, and `E3_Change Log`
-- Optional OpenAI-compatible structured output with deterministic fallback
+- Optional Claude (or OpenAI) structured intake with deterministic fallback
 - Adapter-neutral ticket generator and `MockJiraAdapter`
 - Dual ITO + BIM Jira blueprint, proposed traceability relationship, clipboard copy, and JSON export
 - Self-service semantic-model access blueprint using mock ITO access + BIM enablement/security-review drafts
@@ -30,7 +30,7 @@ The prototype runs outside Armada's Microsoft and Jira environment. It does not 
 flowchart LR
     UI["React chat + intake workbench"] --> API["FastAPI endpoints"]
     API --> ENGINE["IntakeEngine"]
-    ENGINE --> LLM["OpenAI client or deterministic fallback"]
+    ENGINE --> LLM["Claude / OpenAI client or deterministic fallback"]
     ENGINE --> KB["Static semantic-model context"]
     ENGINE --> GENERATOR["TicketGenerator"]
     GENERATOR --> CONTRACT["JiraAdapter.create_ticket_bundle"]
@@ -204,27 +204,34 @@ cp backend/.env.example backend/.env
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `OPENAI_API_KEY` | Optional backend-only API key | Empty; deterministic fallback is used |
-| `OPENAI_MODEL` | OpenAI-compatible model name | `gpt-4o-mini` |
+| `LLM_PROVIDER` | Cloud LLM: `claude` or `openai` | `claude` in `.env.example` |
+| `ANTHROPIC_API_KEY` | Anthropic API key (preferred) | Empty; deterministic fallback is used |
+| `ANTHROPIC_MODEL` | Claude model id | `claude-sonnet-4-5` |
+| `OPENAI_API_KEY` | Optional OpenAI key if `LLM_PROVIDER=openai` | Empty |
+| `OPENAI_MODEL` | OpenAI model name | `gpt-4o-mini` |
 | `DOTENV_OVERRIDE` | Let `backend/.env` replace stale shell values during local startup | `true` |
 | `ENABLE_REAL_JIRA` | Reserved handoff flag | `false`; intentionally ignored |
 | `FRONTEND_ORIGINS` | Comma-separated CORS origins | Local Vite origins |
 | `VITE_API_BASE_URL` | Optional frontend API origin | Empty; use Vite proxy |
 
-Never put `OPENAI_API_KEY` in `frontend/.env`, frontend code, browser storage, or source control. `backend/.env` and all `.env` files are ignored by Git.
+Never put API keys in `frontend/.env`, frontend code, browser storage, or source control. `backend/.env` and all `.env` files are ignored by Git.
 
 ## LLM behavior and fallback
 
+<<<<<<< HEAD
 When `OPENAI_API_KEY` is present, `backend/app/llm_client.py` sends the current intake, recent transcript, field metadata, active scenario profile, safety rules, and static business context to the OpenAI Chat Completions API. It uses strict Structured Outputs with a Pydantic response model. The server then reconciles canonical fields, chooses questions from the active profile, and recomputes scoring, readiness, risks, and validation eligibility. Obvious fields are pre-extracted deterministically before the model call so multi-turn state is stable.
+=======
+With `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY` set, `backend/app/llm_client.py` calls Anthropic Claude with a tool-enforced intake schema. With `LLM_PROVIDER=openai` and `OPENAI_API_KEY`, it uses OpenAI Chat Completions with strict Structured Outputs. In both cases the server recomputes scoring, readiness, risks, and validation eligibility after the model returns. Obvious fields are pre-extracted deterministically before the model call so multi-turn state is stable.
+>>>>>>> 53ee605 (Adding jira integration)
 
 The API and UI make every call observable:
 
-- `llm_provider: openai` means the model response passed strict parsing.
-- `llm_request_id` contains the OpenAI `chatcmpl-*` request ID.
+- `llm_provider: claude` or `openai` means the model response passed parsing.
+- `llm_request_id` contains the provider request ID when available.
 - `llm_model` and `llm_latency_ms` identify the resolved model and measured round trip.
-- `llm_provider: deterministic` with `fallback_reason` means an OpenAI attempt failed or no key was configured.
+- `llm_provider: deterministic` with `fallback_reason` means the cloud attempt failed or no key was configured.
 
-OpenAI strict schemas cannot use dynamic-key objects. The model therefore returns field metadata updates as a strict list of `{field, confidence, source, evidence, updated_at}` objects; the intake engine converts them into the parallel field-keyed dictionary exposed to the frontend.
+Structured schemas avoid dynamic-key objects. The model returns field metadata updates as a list of `{field, confidence, source, evidence, updated_at}` objects; the intake engine converts them into the parallel field-keyed dictionary exposed to the frontend.
 
 If the key is absent—or if the API returns invalid output, a network error, quota error, or any other failure—the same request is processed by the deterministic engine. Existing intake state is preserved. The fallback is never silent: each intake response reports `llm_provider`, `llm_model`, `llm_request_id`, `llm_latency_ms`, and `fallback_reason`, and the frontend displays the active mode beside every assistant message. The fallback:
 

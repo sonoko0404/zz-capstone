@@ -84,15 +84,21 @@ export function ChatPanel({
                 {message.mode === 'draft_ticket' && <span className="message-status">Draft ready</span>}
                 {message.role === 'assistant' && message.llmProvider && (
                   <span className={`provider-badge ${message.llmProvider}`}>
-                    {message.llmProvider === 'openai' ? 'OpenAI API' : message.llmProvider === 'deterministic' ? 'Fallback' : 'Guardrail'}
+                    {message.llmProvider === 'openai'
+                      ? 'OpenAI API'
+                      : message.llmProvider === 'claude'
+                        ? 'Claude'
+                        : message.llmProvider === 'deterministic'
+                          ? 'Fallback'
+                          : 'Guardrail'}
                   </span>
                 )}
               </div>
               <p>{message.content}</p>
-              {message.llmProvider === 'openai' && (
+              {(message.llmProvider === 'openai' || message.llmProvider === 'claude') && (
                 <div className="llm-trace" title={message.llmRequestId ?? undefined}>
                   <Zap size={12} />
-                  <span>{message.llmModel ?? 'OpenAI model'}</span>
+                  <span>{message.llmModel ?? 'model'}</span>
                   {message.llmLatencyMs !== null && message.llmLatencyMs !== undefined && <span>{message.llmLatencyMs} ms</span>}
                   {message.llmRequestId && <code>{message.llmRequestId.slice(-10)}</code>}
                 </div>
@@ -100,7 +106,7 @@ export function ChatPanel({
               {message.llmProvider === 'deterministic' && message.fallbackReason && (
                 <div className="fallback-warning" role="status">
                   <AlertTriangle size={13} />
-                  <span><strong>OpenAI fallback:</strong> {message.fallbackReason}</span>
+                  <span><strong>LLM fallback:</strong> {message.fallbackReason}</span>
                 </div>
               )}
               {message.contextUsed && message.contextUsed.length > 0 && (

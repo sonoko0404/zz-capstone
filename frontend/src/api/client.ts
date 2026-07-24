@@ -1,4 +1,5 @@
 import type {
+  AttachmentListResponse,
   ContextSummary,
   IntakeResponse,
   LLMRuntimeStatus,
@@ -47,6 +48,25 @@ export const api = {
     request<IntakeResponse>('/api/intake/field', {
       method: 'PATCH',
       body: JSON.stringify({ session_id: sessionId, field, value, confirmed }),
+    }),
+  uploadAttachment: async (sessionId: string, file: File) => {
+    const body = new FormData()
+    body.append('session_id', sessionId)
+    body.append('file', file)
+    const response = await fetch(`${API_BASE}/api/intake/attachments`, {
+      method: 'POST',
+      body,
+    })
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => null)) as { detail?: string } | null
+      throw new Error(payload?.detail ?? `Upload failed with status ${response.status}`)
+    }
+    return (await response.json()) as AttachmentListResponse
+  },
+  removeAttachment: (sessionId: string, filename: string) =>
+    request<AttachmentListResponse>('/api/intake/attachments', {
+      method: 'DELETE',
+      body: JSON.stringify({ session_id: sessionId, filename }),
     }),
   validationAction: (
     sessionId: string,

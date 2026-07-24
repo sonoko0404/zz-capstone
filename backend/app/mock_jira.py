@@ -50,7 +50,6 @@ class MockJiraAdapter(JiraAdapter):
 
 
 # REAL JIRA HANDOFF POINT:
-# Add a RealJiraAdapter(JiraAdapter) in a new real_jira.py module later. It should
-# accept JiraTicketBundlePayload and return JiraTicketBundleAdapterResult from
-# create_ticket_bundle. Do not change the intake engine, ticket generator, API
-# response, or frontend when swapping it in.
+# RealJiraAdapter in real_jira.py implements create_ticket_bundle with Jira Cloud
+# REST API v3. Enable via ENABLE_REAL_JIRA=true and JIRA_* env vars. Intake engine,
+# ticket generator, and frontend stay unchanged when swapping adapters.

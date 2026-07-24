@@ -1,4 +1,4 @@
-import { Check, Edit3, Filter, Search, ShieldQuestion, X } from 'lucide-react'
+import { Check, Edit3, Filter, Info, Search, ShieldQuestion, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import type { FieldMetadata, IntakeData, RequirementNode } from '../types/intake'
 
@@ -13,8 +13,26 @@ interface RequirementsMatrixProps {
 
 const BOOLEAN_FIELDS = new Set(['requester_email_unavailable', 'include_chat_attachment'])
 
+/** Common Jira Cloud issue types for ITO / BIM handoff. */
+const JIRA_ISSUE_TYPES = ['Epic', 'Story', 'Task', 'Bug', 'Sub-task'] as const
+
+/** Jira Cloud default priority names. */
+const JIRA_PRIORITIES = ['Highest', 'High', 'Medium', 'Low', 'Lowest'] as const
+
+const SELECT_FIELDS: Record<string, readonly string[]> = {
+  jira_issue_type: JIRA_ISSUE_TYPES,
+  priority: JIRA_PRIORITIES,
+}
+
 function labelFor(field: string) {
   return field.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function selectValue(field: string, raw: string | null | undefined) {
+  const options = SELECT_FIELDS[field]
+  if (!options || !raw) return ''
+  const match = options.find((option) => option.toLowerCase() === raw.toLowerCase())
+  return match ?? ''
 }
 
 function displayValue(value: unknown) {
@@ -117,9 +135,51 @@ export function RequirementsMatrix({
         {visibleNodes.length === 0 && <p className="matrix-empty">No requirements match this view.</p>}
       </div>
       <div className="handoff-options">
-        <div><span>Jira Issue Type</span><strong>{intake?.jira_issue_type ?? 'To be confirmed'}</strong><button onClick={() => openEditor('jira_issue_type')} type="button"><Edit3 size={12} /> Edit</button></div>
-        <div><span>Priority</span><strong>{intake?.priority ?? 'To be confirmed'}</strong><button onClick={() => openEditor('priority')} type="button"><Edit3 size={12} /> Edit</button></div>
-        <label><input checked={intake?.include_chat_attachment ?? false} onChange={(event) => void onEdit('include_chat_attachment', event.target.checked)} type="checkbox" /><span>Attach sanitized chat.txt draft</span></label>
+        <label className="handoff-select">
+          <span>Jira Issue Type</span>
+          <select
+            aria-label="Jira issue type"
+            disabled={saving}
+            onChange={(event) => void onEdit('jira_issue_type', event.target.value || null)}
+            value={selectValue('jira_issue_type', intake?.jira_issue_type)}
+          >
+            <option value="">Select issue type…</option>
+            {JIRA_ISSUE_TYPES.map((type) => (
+              <option key={type} value={type}>{type}</option>
+            ))}
+          </select>
+        </label>
+        <label className="handoff-select">
+          <span>Priority</span>
+          <select
+            aria-label="Priority"
+            disabled={saving}
+            onChange={(event) => void onEdit('priority', event.target.value || null)}
+            value={selectValue('priority', intake?.priority)}
+          >
+            <option value="">Select priority…</option>
+            {JIRA_PRIORITIES.map((level) => (
+              <option key={level} value={level}>{level}</option>
+            ))}
+          </select>
+        </label>
+        <label className="handoff-chat-attach">
+          <input
+            checked={intake?.include_chat_attachment ?? false}
+            onChange={(event) => void onEdit('include_chat_attachment', event.target.checked)}
+            type="checkbox"
+          />
+          <span>Attach Chat Transcript</span>
+          <button
+            aria-label="Required for file upload"
+            className="info-tooltip"
+            data-tooltip="Required for file upload"
+            onClick={(event) => event.preventDefault()}
+            type="button"
+          >
+            <Info size={13} />
+          </button>
+        </label>
       </div>
 
       {editingField && (
@@ -131,6 +191,13 @@ export function RequirementsMatrix({
             <p>Manual edits are marked <strong>user confirmed</strong> and protected from later model overwrites.</p>
             {BOOLEAN_FIELDS.has(editingField) ? (
               <select onChange={(event) => setDraft(event.target.value)} value={draft || 'false'}><option value="false">No</option><option value="true">Yes</option></select>
+            ) : editingField in SELECT_FIELDS ? (
+              <select autoFocus onChange={(event) => setDraft(event.target.value)} value={selectValue(editingField, draft) || draft}>
+                <option value="">Select…</option>
+                {SELECT_FIELDS[editingField].map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
             ) : (
               <textarea autoFocus onChange={(event) => setDraft(event.target.value)} rows={5} value={draft} />
             )}

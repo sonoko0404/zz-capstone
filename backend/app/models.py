@@ -142,7 +142,7 @@ class LLMModelOutput(BaseModel):
 class LLMIntakeResult(LLMModelOutput):
     """Model output plus server-owned runtime provenance."""
 
-    llm_provider: Literal["openai", "deterministic"] = "deterministic"
+    llm_provider: Literal["openai", "claude", "deterministic"] = "deterministic"
     llm_model: str | None = None
     llm_request_id: str | None = None
     llm_latency_ms: int | None = None
@@ -194,6 +194,13 @@ class AttachmentDraft(BaseModel):
     content: str
     included: bool = False
     uploaded: bool = False
+    content_encoding: Literal["utf-8", "base64"] = "utf-8"
+    size_bytes: int = 0
+    source: Literal["chat", "user"] = "chat"
+
+    def public_view(self) -> "AttachmentDraft":
+        """Metadata-only copy — never send file bodies to the browser."""
+        return self.model_copy(update={"content": ""})
 
 
 class JiraTicketDraftPayload(BaseModel):
@@ -249,11 +256,24 @@ class JiraTicketBundlePreview(BaseModel):
     disclaimer: str = "No real Jira ticket was created."
 
 
+class RemoveAttachmentRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=120)
+    filename: str = Field(min_length=1, max_length=255)
+
+
+class AttachmentListResponse(BaseModel):
+    session_id: str
+    attachments: list[AttachmentDraft] = Field(default_factory=list)
+    ticket_preview: TicketPreview | None = None
+    ticket_bundle_preview: JiraTicketBundlePreview | None = None
+
+
 class TicketGenerationResponse(TicketPreview):
     """Bundle response with legacy BIM preview fields preserved at top level."""
 
     ticket_preview: TicketPreview
     ticket_bundle_preview: JiraTicketBundlePreview
+    pending_attachments: list[AttachmentDraft] = Field(default_factory=list)
 
 
 class MessageRequest(BaseModel):
@@ -291,6 +311,7 @@ class IntakeMessageResponse(BaseModel):
     ready_for_ticket: bool
     ticket_preview: TicketPreview | None = None
     ticket_bundle_preview: JiraTicketBundlePreview | None = None
+    pending_attachments: list[AttachmentDraft] = Field(default_factory=list)
     field_metadata: dict[str, FieldMetadata] = Field(default_factory=dict)
     ambiguous_fields: list[str] = Field(default_factory=list)
     next_questions: list[ClarificationQuestion] = Field(default_factory=list)
@@ -303,7 +324,7 @@ class IntakeMessageResponse(BaseModel):
     risk_flags: list[str]
     context_used: list[str]
     mode: Literal["clarify", "draft_ticket", "context_answer", "error"]
-    llm_provider: Literal["openai", "deterministic", "system"]
+    llm_provider: Literal["openai", "claude", "deterministic", "system"]
     llm_model: str | None = None
     llm_request_id: str | None = None
     llm_latency_ms: int | None = None
@@ -312,7 +333,7 @@ class IntakeMessageResponse(BaseModel):
 
 class LLMStatusResponse(BaseModel):
     configured: bool
-    provider: Literal["openai", "deterministic"]
+    provider: Literal["openai", "claude", "deterministic"]
     model: str | None = None
     message: str
 

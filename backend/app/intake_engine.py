@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import re
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import Any
 
 from .intake_config import EDITABLE_FIELDS
@@ -29,7 +31,12 @@ from .intake_reconciler import (
 from .knowledge_base import KnowledgeBase
 from .llm_client import IntakeLLMClient, score_intake
 from .models import (
+<<<<<<< HEAD
     ClarificationQuestion,
+=======
+    AttachmentDraft,
+    AttachmentListResponse,
+>>>>>>> 53ee605 (Adding jira integration)
     FieldMetadata,
     IntakeData,
     IntakeMessageResponse,
@@ -39,7 +46,11 @@ from .models import (
     TicketPreview,
     TranscriptMessage,
 )
-from .ticket_generator import TicketGenerator
+from .ticket_generator import TicketGenerator, redact_bundle_preview
+
+
+MAX_USER_ATTACHMENTS = 5
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 
 @dataclass
@@ -51,11 +62,34 @@ class SessionState:
     cited_context: list[str] = field(default_factory=list)
     ticket_preview: TicketPreview | None = None
     ticket_bundle_preview: JiraTicketBundlePreview | None = None
+    user_attachments: list[AttachmentDraft] = field(default_factory=list)
     validation_state: str = "gathering"
     validator_name: str | None = None
     validated_at: str | None = None
     validation_note: str | None = None
     risk_signals: dict[str, RiskSignal] = field(default_factory=dict)
+
+
+def _safe_filename(name: str) -> str:
+    cleaned = PurePosixPath(name.replace("\\", "/")).name.strip()
+    cleaned = re.sub(r"[^\w.\- ()+]+", "_", cleaned).strip(" ._")
+    return (cleaned or "upload.bin")[:180]
+
+
+def _unique_filename(desired: str, existing: list[str]) -> str:
+    if desired not in existing:
+        return desired
+    stem, dot, suffix = desired.rpartition(".")
+    if not dot:
+        stem, suffix = desired, ""
+    else:
+        suffix = f".{suffix}"
+    index = 2
+    while True:
+        candidate = f"{stem}-{index}{suffix}"
+        if candidate not in existing:
+            return candidate
+        index += 1
 
 
 class IntakeEngine:
@@ -78,16 +112,25 @@ class IntakeEngine:
 
     def llm_status(self) -> LLMStatusResponse:
         configured = bool(self._llm.configured)
-        provider = "openai" if configured else "deterministic"
-        return LLMStatusResponse(
-            configured=configured,
-            provider=provider,
-            model=self._llm.model_name,
-            message=(
-                "OpenAI is configured. Each response reports provider, model, request ID, and latency."
-                if configured
-                else "No OpenAI key is active; deterministic fallback mode is in use."
+        provider_name = getattr(self._llm, "provider_name", "deterministic")
+        if configured and provider_name in {"openai", "claude"}:
+            provider = provider_name  # type: ignore[assignment]
+        else:
+            provider = "deterministic"
+        labels = {
+            "openai": "OpenAI is configured. Each response reports provider, model, request ID, and latency.",
+            "claude": (
+                "Anthropic Claude is configured "
+                f"({self._llm.model_name or 'model pending'}). "
+                "Each response reports provider, model, request ID, and latency."
             ),
+            "deterministic": "No cloud LLM key is active; deterministic fallback mode is in use.",
+        }
+        return LLMStatusResponse(
+            configured=configured and provider != "deterministic",
+            provider=provider,  # type: ignore[arg-type]
+            model=self._llm.model_name,
+            message=labels.get(provider, labels["deterministic"]),
         )
 
     def process_message(self, session_id: str, message: str) -> IntakeMessageResponse:
@@ -297,6 +340,61 @@ class IntakeEngine:
             **state.ticket_preview.model_dump(),
             ticket_preview=state.ticket_preview,
             ticket_bundle_preview=state.ticket_bundle_preview,
+            pending_attachments=[item.public_view() for item in state.user_attachments],
+        )
+
+    def add_user_attachment(
+        self,
+        session_id: str,
+        *,
+        filename: str,
+        content_type: str,
+        content: bytes,
+    ) -> AttachmentListResponse:
+        state = self.get_state(session_id)
+        if len(state.user_attachments) >= MAX_USER_ATTACHMENTS:
+            raise ValueError(f"At most {MAX_USER_ATTACHMENTS} optional files can be attached.")
+        if len(content) == 0:
+            raise ValueError("Empty files cannot be attached.")
+        if len(content) > MAX_ATTACHMENT_BYTES:
+            raise ValueError(f"Each file must be {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB or smaller.")
+
+        safe_name = _unique_filename(
+            _safe_filename(filename),
+            [item.filename for item in state.user_attachments],
+        )
+        state.user_attachments.append(AttachmentDraft(
+            filename=safe_name,
+            content_type=(content_type or "application/octet-stream").strip() or "application/octet-stream",
+            content=base64.b64encode(content).decode("ascii"),
+            included=True,
+            uploaded=False,
+            content_encoding="base64",
+            size_bytes=len(content),
+            source="user",
+        ))
+        if state.ticket_bundle_preview is not None:
+            self._refresh_ticket_drafts(state, True, force=False)
+        return self._attachment_response(session_id, state)
+
+    def remove_user_attachment(self, session_id: str, filename: str) -> AttachmentListResponse:
+        state = self.get_state(session_id)
+        before = len(state.user_attachments)
+        state.user_attachments = [
+            item for item in state.user_attachments if item.filename != filename
+        ]
+        if len(state.user_attachments) == before:
+            raise ValueError(f"No pending attachment named {filename!r}.")
+        if state.ticket_bundle_preview is not None:
+            self._refresh_ticket_drafts(state, True, force=False)
+        return self._attachment_response(session_id, state)
+
+    def _attachment_response(self, session_id: str, state: SessionState) -> AttachmentListResponse:
+        return AttachmentListResponse(
+            session_id=session_id,
+            attachments=[item.public_view() for item in state.user_attachments],
+            ticket_preview=state.ticket_preview,
+            ticket_bundle_preview=state.ticket_bundle_preview,
         )
 
     def _refresh_ticket_drafts(self, state: SessionState, ready: bool, force: bool = False) -> None:
@@ -304,21 +402,50 @@ class IntakeEngine:
             state.ticket_preview = None
             state.ticket_bundle_preview = None
             return
-        if force or state.ticket_bundle_preview is None:
+        extras = list(state.user_attachments)
+        if force:
+            # Explicit generate-ticket action: may create real Jira issues.
             state.ticket_bundle_preview = self._tickets.generate_bundle(
                 state.intake,
                 state.transcript,
                 state.validation_state,
+                extra_attachments=extras,
+            )
+        elif state.ticket_bundle_preview is None:
+            # Chat/auto-preview must stay local. Never write to Jira mid-conversation.
+            from .mock_jira import MockJiraAdapter
+            from .ticket_generator import TicketGenerator
+
+            previewer = TicketGenerator(MockJiraAdapter())
+            state.ticket_bundle_preview = previewer.generate_bundle(
+                state.intake,
+                state.transcript,
+                state.validation_state,
+                extra_attachments=extras,
             )
         else:
-            # Rebuild content after field edits while keeping stable mock keys.
-            payload = self._tickets.build_bundle_payload(state.intake, state.transcript, state.validation_state)
+            # Rebuild content after field edits while keeping stable draft keys.
+            payload = self._tickets.build_bundle_payload(
+                state.intake,
+                state.transcript,
+                state.validation_state,
+                extra_attachments=extras,
+            )
+            public_ito = {
+                **payload.ito_ticket.model_dump(),
+                "attachments": [item.public_view() for item in payload.ito_ticket.attachments],
+            }
+            public_bim = {
+                **payload.bim_ticket.model_dump(),
+                "attachments": [item.public_view() for item in payload.bim_ticket.attachments],
+            }
             state.ticket_bundle_preview = state.ticket_bundle_preview.model_copy(update={
-                "ito_ticket": state.ticket_bundle_preview.ito_ticket.model_copy(update=payload.ito_ticket.model_dump()),
-                "bim_ticket": state.ticket_bundle_preview.bim_ticket.model_copy(update=payload.bim_ticket.model_dump()),
+                "ito_ticket": state.ticket_bundle_preview.ito_ticket.model_copy(update=public_ito),
+                "bim_ticket": state.ticket_bundle_preview.bim_ticket.model_copy(update=public_bim),
                 "proposed_relationship": payload.proposed_relationship,
                 "validation_state": state.validation_state,
             })
+            state.ticket_bundle_preview = redact_bundle_preview(state.ticket_bundle_preview)
         state.ticket_preview = self._tickets.legacy_preview_from_bundle(state.intake, state.ticket_bundle_preview)
 
     def _response(
@@ -362,6 +489,7 @@ class IntakeEngine:
             ready_for_ticket=ready,
             ticket_preview=state.ticket_preview,
             ticket_bundle_preview=state.ticket_bundle_preview,
+            pending_attachments=[item.public_view() for item in state.user_attachments],
             field_metadata=state.field_metadata,
             ambiguous_fields=ambiguous,
             next_questions=next_questions or [],

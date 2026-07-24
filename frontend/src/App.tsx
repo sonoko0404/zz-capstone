@@ -8,6 +8,7 @@ import { RequirementsMatrix } from './components/RequirementsMatrix'
 import { StressTestPanel } from './components/StressTestPanel'
 import { TicketPreviewCard } from './components/TicketPreviewCard'
 import type {
+  AttachmentDraft,
   ChatMessage,
   ContextSummary,
   IntakeData,
@@ -48,6 +49,9 @@ export function App() {
   const [contextOpen, setContextOpen] = useState(false)
   const [insightsOpen, setInsightsOpen] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [creatingTicket, setCreatingTicket] = useState(false)
+  const [uploadingAttachment, setUploadingAttachment] = useState(false)
+  const [pendingAttachments, setPendingAttachments] = useState<AttachmentDraft[]>([])
   const [savingField, setSavingField] = useState(false)
   const [runningId, setRunningId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -96,15 +100,16 @@ export function App() {
     }
     if (response.llm_provider !== 'system') {
       setLlmStatus({
-        configured: response.llm_provider === 'openai',
+        configured: response.llm_provider === 'openai' || response.llm_provider === 'claude',
         provider: response.llm_provider,
         model: response.llm_model,
-        message: response.fallback_reason ?? 'OpenAI API response completed successfully.',
+        message: response.fallback_reason ?? 'LLM response completed successfully.',
       })
     }
     setIntake(response.intake)
     setTicket(response.ticket_preview)
     setTicketBundle(response.ticket_bundle_preview)
+    if (response.pending_attachments) setPendingAttachments(response.pending_attachments)
     setFieldMetadata(response.field_metadata)
     setRequirements(response.requirements_matrix)
     setAmbiguousFields(response.ambiguous_fields)
@@ -134,6 +139,7 @@ export function App() {
       setIntake(null)
       setTicket(null)
       setTicketBundle(null)
+      setPendingAttachments([])
       setFieldMetadata({})
       setRequirements([])
       setAmbiguousFields([])
@@ -155,6 +161,55 @@ export function App() {
       throw requestError
     } finally {
       setSavingField(false)
+    }
+  }
+
+  async function createTicketsInJira() {
+    setCreatingTicket(true)
+    setError(null)
+    try {
+      const preview = await api.generateTicket(sessionId)
+      setTicket(preview.ticket_preview)
+      setTicketBundle(preview.ticket_bundle_preview)
+      if (preview.pending_attachments) setPendingAttachments(preview.pending_attachments)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not create Jira tickets.')
+    } finally {
+      setCreatingTicket(false)
+    }
+  }
+
+  async function uploadAttachmentFiles(files: FileList | File[]) {
+    setUploadingAttachment(true)
+    setError(null)
+    try {
+      let latest = pendingAttachments
+      for (const file of Array.from(files)) {
+        const response = await api.uploadAttachment(sessionId, file)
+        latest = response.attachments
+        if (response.ticket_preview) setTicket(response.ticket_preview)
+        if (response.ticket_bundle_preview) setTicketBundle(response.ticket_bundle_preview)
+      }
+      setPendingAttachments(latest)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not upload the attachment.')
+    } finally {
+      setUploadingAttachment(false)
+    }
+  }
+
+  async function removePendingAttachment(filename: string) {
+    setUploadingAttachment(true)
+    setError(null)
+    try {
+      const response = await api.removeAttachment(sessionId, filename)
+      setPendingAttachments(response.attachments)
+      if (response.ticket_preview) setTicket(response.ticket_preview)
+      if (response.ticket_bundle_preview) setTicketBundle(response.ticket_bundle_preview)
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Could not remove the attachment.')
+    } finally {
+      setUploadingAttachment(false)
     }
   }
 
@@ -196,9 +251,11 @@ export function App() {
             <span>
               {llmStatus?.provider === 'openai'
                 ? `OpenAI · ${llmStatus.model ?? 'configured'}`
-                : llmStatus?.provider === 'deterministic'
-                  ? 'Deterministic fallback'
-                  : 'Checking AI'}
+                : llmStatus?.provider === 'claude'
+                  ? `Claude · ${llmStatus.model ?? 'configured'}`
+                  : llmStatus?.provider === 'deterministic'
+                    ? 'Deterministic fallback'
+                    : 'Checking AI'}
             </span>
           </div>
           <div className="safety-chip"><ShieldCheck size={14} /><span>Mock Jira</span></div>
@@ -231,7 +288,16 @@ export function App() {
                 />
               </div>
               <div id="ticket-draft">
-                <TicketPreviewCard bundle={ticketBundle} ticket={ticket} />
+                <TicketPreviewCard
+                  bundle={ticketBundle}
+                  creating={creatingTicket}
+                  onCreateInJira={createTicketsInJira}
+                  onRemoveAttachment={removePendingAttachment}
+                  onUploadFiles={uploadAttachmentFiles}
+                  pendingAttachments={pendingAttachments}
+                  ticket={ticket}
+                  uploading={uploadingAttachment}
+                />
               </div>
             </InsightSidebar>
           </div>

@@ -1023,6 +1023,259 @@ Do not ask dashboard KPI, display-format, or refresh questions for Self-Service 
             })
 
 
+class ClaudeIntakeLLM(IntakeLLMClient):
+    """Anthropic Claude client with tool-enforced JSON and deterministic fallback."""
+
+    provider_name = "claude"
+    configured = True
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        fallback: DeterministicMockLLM,
+        *,
+        timeout: float = 120.0,
+    ) -> None:
+        from anthropic import Anthropic
+
+        self._client = Anthropic(api_key=api_key, timeout=timeout)
+        self._model = model
+        self.model_name = model
+        self._fallback = fallback
+
+    def analyze(
+        self,
+        message: str,
+        current: IntakeData,
+        knowledge: KnowledgeBase,
+        last_question_fields: list[str],
+        field_metadata: dict[str, FieldMetadata] | None = None,
+        recent_transcript: list[TranscriptMessage] | None = None,
+        already_cited_context: list[str] | None = None,
+    ) -> LLMIntakeResult:
+        preprocessed_result = self._fallback.analyze(
+            message,
+            current,
+            knowledge,
+            last_question_fields,
+            field_metadata,
+            recent_transcript,
+            already_cited_context,
+        )
+        preprocessed = preprocessed_result.updated_intake
+        already_cited = already_cited_context or []
+        system = f"""You are a concise guided intake assistant for BI, report, dashboard, data extract, and metric-analysis requests.
+Call the submit_intake_result tool with a complete intake analysis for this turn.
+
+Rules:
+- Extract only information explicitly supplied or safely implied by the requested deliverable.
+- The current_intake includes server-side pre-extraction. Preserve its non-null fields unless the user explicitly corrects them.
+- Preserve fields marked user_confirmed in field_metadata unless the user clearly corrects them.
+- Classify scenario_type independently from request_type using exactly one of: New Dashboard, Ambiguous Request, Existing Report Issue, Enhancement Request, Self-Service Access, Unassigned.
+- For each field you add or change, return field_metadata_updates with confidence, source, short evidence from the user message, and updated_at. Inferences must not be marked user_provided.
+- Ask only the most important 1-3 missing questions; prioritize source, audience, metrics, owner, and success/validation.
+- Each next_questions item must include field, plain-language question, why it matters, up to 4 suggested replies, and priority.
+- Acknowledge what was newly captured before asking the next questions.
+- Speak naturally to the business user. Do not mention confidence scores, raw field names, project_type_hint, extraction mechanics, or JSON.
+- "Power BI Data Agent" means the provided static semantic-model context. It may be recorded as a data source/context descriptor, but never describe it as a live connection.
+- BIM is normally the delivery category for BI work. E2 links may suggest BIM to SCP/ITO traceability.
+- context_used must list only newly relevant static-context notes for THIS turn. Do not repeat items from already_cited_context. If nothing new applies, return an empty list.
+- Never claim live access to or action in Armada, Jira, Power BI, Fabric, Azure, or Copilot Studio.
+- Never claim a real ticket was created. Recommend sanitized/aggregate data for sensitive requests.
+- Do not invent Jira project configuration, Jira Issue Type values, relationship types, Armada policies, source fields, or ticket IDs. Use "To be confirmed by Jira integration" for unknown Jira configuration.
+- Treat the following as static context, not live facts:
+{knowledge.prompt_context()}
+"""
+        user_payload: dict[str, Any] = {
+            "message": message,
+            "current_intake": preprocessed.model_dump(),
+            "last_question_fields": last_question_fields,
+            "already_cited_context": already_cited,
+            "field_metadata": {
+                key: value.model_dump() for key, value in (field_metadata or {}).items()
+            },
+            "recent_transcript": [
+                {"role": entry.role, "content": entry.content}
+                for entry in (recent_transcript or [])[-6:]
+            ],
+        }
+        started_at = perf_counter()
+        try:
+            response = self._client.messages.create(
+                model=self._model,
+                max_tokens=4096,
+                temperature=0.2,
+                system=system,
+                tools=[
+                    {
+                        "name": "submit_intake_result",
+                        "description": "Submit the structured BI intake analysis for this conversation turn.",
+                        "input_schema": _claude_tool_schema(),
+                    }
+                ],
+                tool_choice={"type": "tool", "name": "submit_intake_result"},
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            "Analyze this intake turn and call submit_intake_result.\n"
+                            + json.dumps(user_payload, ensure_ascii=False)
+                        ),
+                    }
+                ],
+            )
+            tool_input: dict[str, Any] | None = None
+            for block in response.content:
+                if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "submit_intake_result":
+                    tool_input = dict(block.input)
+                    break
+            if tool_input is None:
+                # Fallback: try parsing plain text JSON if the model ignored tools.
+                text = "".join(
+                    getattr(block, "text", "")
+                    for block in response.content
+                    if getattr(block, "type", None) == "text"
+                ).strip()
+                if not text:
+                    raise ValueError("Claude returned no tool payload and no text content.")
+                tool_input = json.loads(_extract_json_payload(text))
+
+            parsed = LLMModelOutput.model_validate(tool_input)
+            result = LLMIntakeResult(
+                **parsed.model_dump(),
+                llm_provider="claude",
+                llm_model=response.model or self._model,
+                llm_request_id=response.id,
+                llm_latency_ms=round((perf_counter() - started_at) * 1000),
+            )
+            return _finalize_cloud_result(
+                message=message,
+                preprocessed=preprocessed,
+                preprocessed_result=preprocessed_result,
+                result=result,
+            )
+        except Exception as exc:
+            reason = _fallback_reason(exc)
+            logger.warning(
+                "Claude intake failed; using deterministic fallback (%s)",
+                reason,
+                exc_info=True,
+            )
+            fallback = self._fallback.analyze(
+                message,
+                current,
+                knowledge,
+                last_question_fields,
+                field_metadata,
+                recent_transcript,
+                already_cited_context,
+            )
+            return fallback.model_copy(update={
+                "llm_provider": "deterministic",
+                "llm_model": self._model,
+                "llm_latency_ms": round((perf_counter() - started_at) * 1000),
+                "fallback_reason": reason,
+            })
+
+
+def _claude_tool_schema() -> dict[str, Any]:
+    """JSON Schema for Claude tool_use, derived from the intake response model."""
+    schema = LLMModelOutput.model_json_schema()
+    # Anthropic expects a root object schema; keep $defs for $ref resolution.
+    if schema.get("type") != "object":
+        return {
+            "type": "object",
+            "properties": schema.get("properties", {}),
+            "required": schema.get("required", []),
+            "additionalProperties": False,
+        }
+    schema.setdefault("additionalProperties", False)
+    return schema
+
+
+def _extract_json_payload(text: str) -> str:
+    """Pull the first JSON object from a model reply."""
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = cleaned.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start < 0 or end < 0 or end <= start:
+        raise ValueError("No JSON object found in model response.")
+    return cleaned[start : end + 1]
+
+
+def _finalize_cloud_result(
+    *,
+    message: str,
+    preprocessed: IntakeData,
+    preprocessed_result: LLMIntakeResult,
+    result: LLMIntakeResult,
+) -> LLMIntakeResult:
+    """Recompute scoring/safety fields server-side for any cloud LLM provider."""
+    merged = preprocessed.model_copy(update={
+        key: value
+        for key, value in result.updated_intake.model_dump().items()
+        if value not in (None, "", [], {})
+    })
+    scenario = result.scenario_type if result.scenario_type in ALLOWED_SCENARIOS else preprocessed.scenario_type
+    merged.scenario_type = scenario or classify_scenario(message, merged)
+    score, missing, ready = score_intake(merged)
+    risks = list(dict.fromkeys(result.risk_flags + detect_risks(message, merged)))
+    assistant_message = result.assistant_message
+    questions = result.next_questions[:3]
+    if not questions and not ready:
+        questions = select_questions(merged, missing)
+    if questions and not ready and not any(question.question in assistant_message for question in questions):
+        assistant_message = assistant_message.rstrip() + "\n" + "\n".join(
+            f"{index}. {question.question}"
+            for index, question in enumerate(questions, start=1)
+        )
+    if ready or re.search(
+        r"\b(created|submitted|sent|pushed|connected)\b.{0,50}\b(real\s+)?(jira|ticket|power bi|fabric|azure|copilot)",
+        assistant_message,
+        re.IGNORECASE,
+    ):
+        assistant_message = (
+            "The minimum intake requirements are complete. I prepared a local draft ticket preview. "
+            "No real Jira ticket was created and no enterprise system was accessed."
+            if ready
+            else "This prototype can structure the request and prepare a local draft only; it did not access or write to an enterprise system."
+        )
+    if any("sensitive data" in risk.lower() for risk in risks):
+        assistant_message += " Please use sanitized or aggregate data only."
+    merged.missing_fields = missing
+    merged.risk_flags = risks
+    merged.confidence_score = round(score / 100, 2)
+    metadata_updates_by_field = {
+        item.field: item for item in preprocessed_result.field_metadata_updates
+    }
+    metadata_updates_by_field.update({
+        item.field: item for item in result.field_metadata_updates
+        if item.field in EDITABLE_FIELDS
+    })
+    metadata_updates = list(metadata_updates_by_field.values())
+    ambiguous = sorted(set(result.ambiguous_fields) | {
+        item.field for item in metadata_updates
+        if item.source in {"inferred", "needs_confirmation"} or item.confidence == "low"
+    })
+    return result.model_copy(update={
+        "assistant_message": assistant_message,
+        "scenario_type": merged.scenario_type,
+        "updated_intake": merged,
+        "field_metadata_updates": metadata_updates,
+        "missing_fields": missing,
+        "ambiguous_fields": ambiguous,
+        "completion_score": score,
+        "ready_for_ticket": ready,
+        "risk_flags": risks,
+        "next_questions": questions,
+    })
+
+
 def _fallback_reason(exc: Exception) -> str:
     status = getattr(exc, "status_code", None)
     code = getattr(exc, "code", None)
@@ -1047,7 +1300,29 @@ def _append_detail(existing: str | None, detail: str) -> str:
 
 def create_llm_client() -> IntakeLLMClient:
     fallback = DeterministicMockLLM()
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not api_key:
+    provider = os.getenv("LLM_PROVIDER", "").strip().lower()
+    anthropic_key = (
+        os.getenv("ANTHROPIC_API_KEY", "").strip()
+        or os.getenv("CLAUDE_API_KEY", "").strip()
+    )
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+
+    use_claude = provider in {"claude", "anthropic"}
+    if not provider and anthropic_key and not openai_key:
+        use_claude = True
+
+    if use_claude:
+        if not anthropic_key:
+            return DeterministicMockLLM(
+                "LLM_PROVIDER=claude but ANTHROPIC_API_KEY is not configured in backend/.env"
+            )
+        model = os.getenv("ANTHROPIC_MODEL", os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")).strip()
+        return ClaudeIntakeLLM(anthropic_key, model, fallback)
+
+    if not openai_key:
         return DeterministicMockLLM("OPENAI_API_KEY is not configured in backend/.env")
-    return OpenAIIntakeLLM(api_key, os.getenv("OPENAI_MODEL", "gpt-4o-mini"), fallback)
+    return OpenAIIntakeLLM(
+        api_key=openai_key,
+        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        fallback=fallback,
+    )

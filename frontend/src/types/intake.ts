@@ -171,6 +171,12 @@ export interface LLMRuntimeStatus {
   message: string
 }
 
+export interface JiraRuntimeStatus {
+  configured: boolean
+  provider: 'mock' | 'real'
+  message: string
+}
+
 export interface IntakeResponse {
   session_id: string
   assistant_message: string

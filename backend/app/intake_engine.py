@@ -31,12 +31,9 @@ from .intake_reconciler import (
 from .knowledge_base import KnowledgeBase
 from .llm_client import IntakeLLMClient, score_intake
 from .models import (
-<<<<<<< HEAD
-    ClarificationQuestion,
-=======
     AttachmentDraft,
     AttachmentListResponse,
->>>>>>> 53ee605 (Adding jira integration)
+    ClarificationQuestion,
     FieldMetadata,
     IntakeData,
     IntakeMessageResponse,
@@ -550,12 +547,10 @@ class IntakeEngine:
             lower,
         )
         if external_action:
-            risk = "External enterprise system access is blocked in this standalone prototype."
             state.risk_signals["external_system_boundary"] = risk_signal(
                 "external_system_boundary",
-                risk,
+                "External actions are blocked in chat; Jira creation requires the explicit ticket action.",
                 evidence=message,
-                blocking_validation=True,
             )
             state.intake.risk_flags = recalculate_risks(
                 state.intake,
@@ -566,9 +561,10 @@ class IntakeEngine:
                 session_id,
                 state,
                 assistant_message=(
-                    "This standalone prototype cannot connect to or write to real Armada Jira, Power BI, "
-                    "Fabric, Azure, or Copilot Studio. I can structure the request and prepare local ITO/BIM "
-                    "drafts only; no external action will be taken."
+                    "This chat cannot connect to or write to external systems directly. I can structure "
+                    "the request and prepare local ITO/BIM drafts; if Real Jira is enabled, a user must "
+                    "select the explicit Create in Jira action after the intake is complete. I did not "
+                    "query or change Jira, Power BI, Fabric, Azure, or Copilot Studio in this chat turn."
                 ),
                 context_used=self._novel_context(
                     state,

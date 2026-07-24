@@ -2,6 +2,7 @@ import type {
   AttachmentListResponse,
   ContextSummary,
   IntakeResponse,
+  JiraRuntimeStatus,
   LLMRuntimeStatus,
   ScenarioSummary,
   StressTestResult,
@@ -26,6 +27,7 @@ export const api = {
   health: () => request<{ status: string }>('/health'),
   context: () => request<ContextSummary>('/api/context/summary'),
   llmStatus: () => request<LLMRuntimeStatus>('/api/llm/status'),
+  jiraStatus: () => request<JiraRuntimeStatus>('/api/jira/status'),
   samples: async () => (await request<{ requests: string[] }>('/api/sample-requests')).requests,
   scenarios: async () =>
     (await request<{ scenarios: ScenarioSummary[] }>('/api/stress-test/scenarios')).scenarios,

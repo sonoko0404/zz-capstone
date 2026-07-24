@@ -6,6 +6,7 @@ interface TicketPreviewCardProps {
   ticket: TicketPreview | null
   bundle: JiraTicketBundlePreview | null
   pendingAttachments?: AttachmentDraft[]
+  jiraProvider?: 'mock' | 'real'
   creating?: boolean
   uploading?: boolean
   onCreateInJira?: () => Promise<void>
@@ -136,6 +137,7 @@ export function TicketPreviewCard({
   ticket,
   bundle,
   pendingAttachments = [],
+  jiraProvider = 'mock',
   creating = false,
   uploading = false,
   onCreateInJira,
@@ -210,7 +212,9 @@ export function TicketPreviewCard({
               type="button"
             >
               <Send size={14} />
-              {creating ? 'Creating in Jira…' : 'Create in Jira'}
+              {creating
+                ? jiraProvider === 'real' ? 'Creating in Jira…' : 'Generating preview…'
+                : jiraProvider === 'real' ? 'Create in Jira' : 'Generate Jira preview'}
             </button>
           )}
           <button aria-label="Copy bundle JSON" className="icon-button" onClick={() => void copyTicket()} type="button">{copied ? <Check size={16} /> : <Clipboard size={16} />}</button>

@@ -2,7 +2,7 @@
 
 A standalone CMU × Armada prototype for guided BI, dashboard, report, data-extract, and metric-analysis intake. The assistant captures PRD-shaped requirements, asks focused clarification questions, applies static Power BI Data Agent / Jira semantic-model context, and prepares a Jira-style draft for downstream BI delivery work.
 
-The prototype runs outside Armada's Microsoft and Jira environment. It does not connect to or write to Jira, Power BI, Fabric, Azure, or Copilot Studio.
+The prototype runs outside Armada's Microsoft environment. It never connects to Power BI, Fabric, Azure, or Copilot Studio. Jira stays mock-only by default; a real Jira Cloud adapter can be enabled explicitly with backend-only credentials, and it writes only after the user selects **Create in Jira**.
 
 ## What is implemented
 
@@ -17,7 +17,7 @@ The prototype runs outside Armada's Microsoft and Jira environment. It does not 
 - Human validation workflow: gathering → draft ready → pending validation → validated/rejected
 - Static semantic-model knowledge base for `E1_Tickets`, `OpenTickets`, `E2_Linked Tickets`, and `E3_Change Log`
 - Optional Claude (or OpenAI) structured intake with deterministic fallback
-- Adapter-neutral ticket generator and `MockJiraAdapter`
+- Adapter-neutral ticket generator with safe-default `MockJiraAdapter` and optional `RealJiraAdapter`
 - Dual ITO + BIM Jira blueprint, proposed traceability relationship, clipboard copy, and JSON export
 - Self-service semantic-model access blueprint using mock ITO access + BIM enablement/security-review drafts
 - Structured feasibility, complexity, cadence, security, and data-quality validation signals
@@ -34,39 +34,30 @@ flowchart LR
     ENGINE --> KB["Static semantic-model context"]
     ENGINE --> GENERATOR["TicketGenerator"]
     GENERATOR --> CONTRACT["JiraAdapter.create_ticket_bundle"]
-    CONTRACT --> MOCK["MockJiraAdapter — current"]
-    CONTRACT -. future .-> REAL["RealJiraAdapter — not implemented"]
+    CONTRACT --> MOCK["MockJiraAdapter — default"]
+    CONTRACT -. ENABLE_REAL_JIRA .-> REAL["RealJiraAdapter — optional"]
 ```
 
 The frontend knows only the backend API contract. The intake engine knows only the `TicketGenerator`. The ticket generator depends on the abstract `JiraAdapter`, never directly on the mock implementation.
 
-## Collaboration boundary: Jira
+## Jira integration boundary
 
-Real Jira integration is intentionally out of scope.
+Jira integration is isolated behind the adapter contract:
 
-- The interface lives in `backend/app/jira_adapter.py`.
-- The only current implementation lives in `backend/app/mock_jira.py`.
-- Adapter injection happens in one place in `backend/app/main.py`.
-- No Atlassian SDK is installed.
-- No Jira credentials are accepted or required.
-- `ENABLE_REAL_JIRA` is intentionally ignored today; setting it does not activate external access.
-- The frontend and intake engine require no changes when a real adapter is added later.
-
-### Future teammate handoff
-
-1. Add `backend/app/real_jira.py` with `class RealJiraAdapter(JiraAdapter)`.
-2. Implement the stable `create_ticket_bundle(self, ticket_bundle: JiraTicketBundlePayload) -> JiraTicketBundleAdapterResult` contract. Keep `create_ticket` only for backward compatibility if needed.
-3. Perform credential loading, Jira field mapping, network calls, errors, retries, and audit behavior entirely inside that adapter.
-4. After security review, update only the adapter construction in `backend/app/main.py` to inject `RealJiraAdapter` instead of `MockJiraAdapter`.
-5. Preserve the bundle payload/result contracts so the ticket generator, intake engine, endpoints, and frontend stay unchanged.
-
-Do not place Jira API calls in routes, `IntakeEngine`, `TicketGenerator`, or frontend components.
+- `backend/app/jira_adapter.py` defines the stable interface.
+- `backend/app/mock_jira.py` is the default and never performs external writes.
+- `backend/app/real_jira.py` implements Jira Cloud REST API v3 issue creation, linking, and optional attachments.
+- `backend/app/main.py` selects the adapter once at startup.
+- The frontend, routes, intake engine, and ticket generator do not contain Jira credentials or direct Jira API calls.
+- Real Jira requires `ENABLE_REAL_JIRA=true` plus `JIRA_BASE_URL`, `JIRA_EMAIL`, and `JIRA_API_TOKEN`.
+- Chat and automatic draft refreshes always use a local mock preview. A real write can occur only through the explicit **Create in Jira** action.
+- If real Jira is disabled or credentials are incomplete, the application safely falls back to `MockJiraAdapter`.
 
 ## Jira ticket-bundle payload contract
 
 The primary handoff contract is a two-ticket blueprint: an ITO intake/request draft and a BIM BI-delivery draft. Requester name and email are written into both descriptions. Unknown Jira configuration is represented explicitly as `To be confirmed by Jira integration`; the prototype does not invent project keys, Issue Type values, relationship types, or enterprise fields.
 
-For `Self-Service Access`, the same unchanged bundle schema is used: ITO describes the access/source request and BIM describes BI enablement, dataset suitability, and security review. Metrics, display format, and refresh are rendered as `Not applicable — self-service access`. These are still local drafts and do not grant permission.
+For `Self-Service Access`, the same unchanged bundle schema is used: ITO describes the access/source request and BIM describes BI enablement, dataset suitability, and security review. Metrics, display format, and refresh are rendered as `Not applicable — self-service access`. A Jira ticket still does not grant Power BI permission.
 
 ```json
 {
@@ -164,6 +155,8 @@ The adapter returns:
 
 `MockJiraAdapter` always returns `created: false`, local `DRAFT-ITO-*` / `DRAFT-BIM-*` identifiers, and never uploads the optional transcript.
 
+`RealJiraAdapter` creates the ITO issue first, creates the BIM issue with the ITO key in its summary, links the pair, and then uploads included attachments. Jira project keys, issue types, and link type are controlled by backend environment variables.
+
 ## Run locally
 
 ### Backend
@@ -210,7 +203,13 @@ cp backend/.env.example backend/.env
 | `OPENAI_API_KEY` | Optional OpenAI key if `LLM_PROVIDER=openai` | Empty |
 | `OPENAI_MODEL` | OpenAI model name | `gpt-4o-mini` |
 | `DOTENV_OVERRIDE` | Let `backend/.env` replace stale shell values during local startup | `true` |
-| `ENABLE_REAL_JIRA` | Reserved handoff flag | `false`; intentionally ignored |
+| `ENABLE_REAL_JIRA` | Enable Jira Cloud writes through `RealJiraAdapter` | `false`; mock previews only |
+| `JIRA_BASE_URL` | Jira Cloud site URL | Required only when real Jira is enabled |
+| `JIRA_EMAIL` | Jira Cloud account email | Required only when real Jira is enabled |
+| `JIRA_API_TOKEN` | Jira Cloud API token | Required only when real Jira is enabled |
+| `ITO_PROJECT_KEY` / `BIM_PROJECT_KEY` | Jira project keys | `ITO` / `BIM` |
+| `ITO_ISSUE_TYPE` / `BIM_ISSUE_TYPE` | Jira issue type names | `Task` / `Story` |
+| `JIRA_LINK_TYPE` | Jira issue-link type | `Relates` |
 | `FRONTEND_ORIGINS` | Comma-separated CORS origins | Local Vite origins |
 | `VITE_API_BASE_URL` | Optional frontend API origin | Empty; use Vite proxy |
 
@@ -218,11 +217,7 @@ Never put API keys in `frontend/.env`, frontend code, browser storage, or source
 
 ## LLM behavior and fallback
 
-<<<<<<< HEAD
-When `OPENAI_API_KEY` is present, `backend/app/llm_client.py` sends the current intake, recent transcript, field metadata, active scenario profile, safety rules, and static business context to the OpenAI Chat Completions API. It uses strict Structured Outputs with a Pydantic response model. The server then reconciles canonical fields, chooses questions from the active profile, and recomputes scoring, readiness, risks, and validation eligibility. Obvious fields are pre-extracted deterministically before the model call so multi-turn state is stable.
-=======
-With `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY` set, `backend/app/llm_client.py` calls Anthropic Claude with a tool-enforced intake schema. With `LLM_PROVIDER=openai` and `OPENAI_API_KEY`, it uses OpenAI Chat Completions with strict Structured Outputs. In both cases the server recomputes scoring, readiness, risks, and validation eligibility after the model returns. Obvious fields are pre-extracted deterministically before the model call so multi-turn state is stable.
->>>>>>> 53ee605 (Adding jira integration)
+With `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY` set, `backend/app/llm_client.py` calls Anthropic Claude with a tool-enforced intake schema. With `LLM_PROVIDER=openai` and `OPENAI_API_KEY`, it uses OpenAI Chat Completions with strict Structured Outputs. If `LLM_PROVIDER` is omitted and only an OpenAI key is configured, OpenAI remains the default. In every cloud-provider path, the server reconciles canonical fields, chooses questions from the active scenario profile, and recomputes scoring, readiness, risks, and validation eligibility. Obvious fields are pre-extracted deterministically before the model call so multi-turn state is stable.
 
 The API and UI make every call observable:
 
@@ -249,13 +244,16 @@ If the key is absent—or if the API returns invalid output, a network error, qu
 | `GET` | `/api/context/summary` | Static table descriptions, terminology, and warnings |
 | `GET` | `/api/sample-requests` | Demo prompts |
 | `GET` | `/api/llm/status` | Safe provider/model configuration status; never returns the API key |
+| `GET` | `/api/jira/status` | Safe mock/real Jira adapter status; never returns credentials |
 | `POST` | `/api/intake/message` | Extract, clarify, score, and optionally preview a draft |
 | `POST` | `/api/intake/reset` | Clear one in-memory session |
 | `PATCH` | `/api/intake/field` | Edit/confirm one whitelisted canonical intake field |
 | `POST` | `/api/intake/validation/submit` | Submit an eligible intake for human validation |
 | `POST` | `/api/intake/validation/approve` | Approve a pending validation draft |
 | `POST` | `/api/intake/validation/reject` | Return a pending/validated draft for revision |
-| `POST` | `/api/intake/generate-ticket` | Generate a mock-only ITO + BIM draft bundle from a ready session |
+| `POST` | `/api/intake/generate-ticket` | Generate a mock bundle, or explicitly create linked Jira issues when real Jira is enabled |
+| `POST` | `/api/intake/attachments` | Add an optional attachment to the current intake session |
+| `DELETE` | `/api/intake/attachments` | Remove a pending attachment before Jira creation |
 | `GET` | `/api/stress-test/scenarios` | Scenario catalog used by the UI |
 | `POST` | `/api/stress-test/run` | Run a repeatable scenario through the same engine |
 

@@ -338,6 +338,12 @@ class LLMStatusResponse(BaseModel):
     message: str
 
 
+class JiraStatusResponse(BaseModel):
+    configured: bool
+    provider: Literal["mock", "real"]
+    message: str
+
+
 class TranscriptMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str

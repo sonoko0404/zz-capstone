@@ -14,6 +14,7 @@ import type {
   IntakeData,
   IntakeResponse,
   FieldMetadata,
+  JiraRuntimeStatus,
   JiraTicketBundlePreview,
   LLMRuntimeStatus,
   ScenarioSummary,
@@ -44,6 +45,7 @@ export function App() {
   const [samples, setSamples] = useState<string[]>([])
   const [context, setContext] = useState<ContextSummary | null>(null)
   const [llmStatus, setLlmStatus] = useState<LLMRuntimeStatus | null>(null)
+  const [jiraStatus, setJiraStatus] = useState<JiraRuntimeStatus | null>(null)
   const [scenarios, setScenarios] = useState<ScenarioSummary[]>([])
   const [stressResult, setStressResult] = useState<StressTestResult | null>(null)
   const [contextOpen, setContextOpen] = useState(false)
@@ -59,13 +61,14 @@ export function App() {
 
   useEffect(() => {
     const controller = new AbortController()
-    Promise.all([api.samples(), api.context(), api.scenarios(), api.llmStatus()])
-      .then(([sampleData, contextData, scenarioData, statusData]) => {
+    Promise.all([api.samples(), api.context(), api.scenarios(), api.llmStatus(), api.jiraStatus()])
+      .then(([sampleData, contextData, scenarioData, statusData, jiraStatusData]) => {
         if (controller.signal.aborted) return
         setSamples(sampleData)
         setContext(contextData)
         setScenarios(scenarioData)
         setLlmStatus(statusData)
+        setJiraStatus(jiraStatusData)
       })
       .catch(() => {
         if (!controller.signal.aborted) {
@@ -258,7 +261,10 @@ export function App() {
                     : 'Checking AI'}
             </span>
           </div>
-          <div className="safety-chip"><ShieldCheck size={14} /><span>Mock Jira</span></div>
+          <div className="safety-chip" title={jiraStatus?.message ?? 'Checking Jira configuration'}>
+            <ShieldCheck size={14} />
+            <span>{jiraStatus?.provider === 'real' ? 'Real Jira enabled' : jiraStatus?.provider === 'mock' ? 'Mock Jira' : 'Checking Jira'}</span>
+          </div>
           <button className="context-button" onClick={() => setContextOpen(true)} type="button">
             <BookOpen size={15} /> Business context
           </button>
@@ -291,6 +297,7 @@ export function App() {
                 <TicketPreviewCard
                   bundle={ticketBundle}
                   creating={creatingTicket}
+                  jiraProvider={jiraStatus?.provider ?? 'mock'}
                   onCreateInJira={createTicketsInJira}
                   onRemoveAttachment={removePendingAttachment}
                   onUploadFiles={uploadAttachmentFiles}

@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 os.environ["OPENAI_API_KEY"] = ""
 os.environ["DOTENV_OVERRIDE"] = "false"
+os.environ["ENABLE_REAL_JIRA"] = "false"
 
 from app.main import app
 
@@ -19,6 +20,9 @@ def test_reference_endpoints() -> None:
     llm_status = client.get("/api/llm/status").json()
     assert llm_status["provider"] == "deterministic"
     assert llm_status["configured"] is False
+    jira_status = client.get("/api/jira/status").json()
+    assert jira_status["provider"] == "mock"
+    assert jira_status["configured"] is False
 
 
 def test_message_generate_and_reset_flow() -> None:

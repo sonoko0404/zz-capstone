@@ -16,6 +16,7 @@ from .models import (
     FieldPatchRequest,
     GenerateTicketRequest,
     IntakeMessageResponse,
+    JiraStatusResponse,
     LLMStatusResponse,
     MessageRequest,
     RemoveAttachmentRequest,
@@ -25,7 +26,7 @@ from .models import (
     TicketGenerationResponse,
     ValidationActionRequest,
 )
-from .real_jira import build_jira_adapter
+from .real_jira import RealJiraAdapter, build_jira_adapter
 from .stress_tests import run_stress_test, scenario_catalog
 from .ticket_generator import TicketGenerator
 
@@ -88,6 +89,20 @@ def sample_requests() -> dict[str, list[str]]:
 @app.get("/api/llm/status", response_model=LLMStatusResponse)
 def llm_status() -> LLMStatusResponse:
     return engine.llm_status()
+
+
+@app.get("/api/jira/status", response_model=JiraStatusResponse)
+def jira_status() -> JiraStatusResponse:
+    configured = isinstance(jira_adapter, RealJiraAdapter)
+    return JiraStatusResponse(
+        configured=configured,
+        provider="real" if configured else "mock",
+        message=(
+            "Real Jira creation is enabled. Tickets are created only through the explicit Create in Jira action."
+            if configured
+            else "Mock Jira is active. Ticket actions create local draft previews only."
+        ),
+    )
 
 
 @app.get("/api/stress-test/scenarios")

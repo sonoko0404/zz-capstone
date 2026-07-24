@@ -2,6 +2,7 @@ import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, Bot, Database, HelpCircle, RotateCcw, Send, Sparkles, UserRound, Zap } from 'lucide-react'
 import type { ChatMessage } from '../types/intake'
 import { SampleRequestButtons } from './SampleRequestButtons'
+import { messageMatchesEvidence } from './requirementsReview'
 
 interface ChatPanelProps {
   messages: ChatMessage[]
@@ -10,6 +11,7 @@ interface ChatPanelProps {
   error: string | null
   onSend: (message: string) => Promise<void>
   onReset: () => Promise<void>
+  evidenceFocus?: { text: string; requestId: number } | null
 }
 
 export function ChatPanel({
@@ -19,14 +21,31 @@ export function ChatPanel({
   error,
   onSend,
   onReset,
+  evidenceFocus,
 }: ChatPanelProps) {
   const [draft, setDraft] = useState('')
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
+  const messageRefs = useRef<Record<string, HTMLElement | null>>({})
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }, [messages, loading])
+
+  useEffect(() => {
+    if (!evidenceFocus) return
+    const match = messages.find((message) => messageMatchesEvidence(message.content, evidenceFocus.text))
+    if (!match) return
+    const element = messageRefs.current[match.id]
+    setHighlightedMessageId(match.id)
+    element?.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      block: 'center',
+    })
+    const timer = window.setTimeout(() => setHighlightedMessageId(null), 2200)
+    return () => window.clearTimeout(timer)
+  }, [evidenceFocus, messages])
 
   async function submit(event?: FormEvent) {
     event?.preventDefault()
@@ -74,7 +93,13 @@ export function ChatPanel({
 
       <div className="chat-body" aria-live="polite">
         {messages.map((message) => (
-          <article className={`message-row ${message.role}`} key={message.id}>
+          <article
+            className={`message-row ${message.role}${highlightedMessageId === message.id ? ' evidence-highlight' : ''}`}
+            key={message.id}
+            ref={(element) => {
+              messageRefs.current[message.id] = element
+            }}
+          >
             <div className="message-avatar" aria-hidden="true">
               {message.role === 'assistant' ? <Bot size={17} /> : <UserRound size={17} />}
             </div>

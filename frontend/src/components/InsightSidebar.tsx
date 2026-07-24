@@ -39,9 +39,9 @@ export function InsightSidebar({ open, onOpenChange, children }: InsightSidebarP
         <div className="rail-divider" aria-hidden="true" />
 
         <button
-          aria-label="Requirements matrix"
+          aria-label="Requirements review"
           className="rail-icon-button"
-          data-tooltip="Requirements matrix"
+          data-tooltip="Requirements review"
           onClick={() => openAndScroll('explainable-requirements')}
           type="button"
         >

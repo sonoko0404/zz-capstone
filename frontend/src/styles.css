@@ -1514,6 +1514,593 @@ main {
   transform: translateY(0);
 }
 
+/* Requirements Review: continuous attention-first ledger (Notion/Linear density) */
+.requirements-panel.panel {
+  border-color: #e7ebf1;
+  box-shadow: none;
+}
+
+.review-header {
+  padding: 16px 16px 12px;
+}
+
+.review-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.review-title-row h2 {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 19px;
+  line-height: 1.25;
+  letter-spacing: -0.025em;
+}
+
+.review-progress {
+  color: #6b7a8c;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-milestone {
+  margin-top: 10px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.review-milestone strong {
+  color: #2b3a51;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+
+.review-milestone span {
+  color: #8490a0;
+  font-size: 12.5px;
+  text-align: right;
+}
+
+.ai-review-summary {
+  margin: 0 16px 4px;
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.ai-review-summary > div {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6d7c91;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ai-review-summary p {
+  margin: 6px 0 0;
+  color: #4a586c;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.attention-index {
+  padding: 8px 16px 12px;
+}
+
+.attention-index > span {
+  display: block;
+  margin-bottom: 5px;
+  color: #8a6a3d;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.attention-index > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+}
+
+.attention-index button {
+  padding: 2px 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #5c4a36;
+  border: 0;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.attention-index button:hover {
+  color: var(--blue);
+}
+
+.attention-index button span {
+  color: #9a7340;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.review-toolbar {
+  padding: 4px 16px 10px;
+}
+
+.review-search {
+  height: 32px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #8a94a4;
+  border: 0;
+  border-bottom: 1px solid #e7ebf0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.review-search:focus-within {
+  color: #536a94;
+  border-bottom-color: #b7c4db;
+}
+
+.review-search input {
+  min-width: 0;
+  width: 100%;
+  color: #3f4d62;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+.review-filters {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  overflow-x: auto;
+}
+
+.review-filters button {
+  position: relative;
+  padding: 2px 0 6px;
+  color: #8792a1;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.review-filters button::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 1.5px;
+  border-radius: 2px;
+  background: transparent;
+}
+
+.review-filters button:hover,
+.review-filters button.active {
+  color: #334257;
+}
+
+.review-filters button.active::after {
+  background: #6f86c0;
+}
+
+.review-ledger {
+  max-height: 540px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  border-top: 1px solid var(--line-soft);
+}
+
+.review-section {
+  scroll-margin-top: 8px;
+  border-bottom: 1px solid #eef1f5;
+}
+
+.review-section.complete {
+  opacity: 0.72;
+}
+
+.review-section.complete:hover,
+.review-section.complete:focus-within {
+  opacity: 1;
+}
+
+.review-section-toggle {
+  width: 100%;
+  min-height: 48px;
+  padding: 9px 16px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 18px 14px;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.review-section-toggle:hover {
+  background: rgba(247, 249, 252, 0.85);
+}
+
+.review-section-status {
+  display: grid;
+  place-items: center;
+  color: #8b9790;
+}
+
+.needs-attention .review-section-status {
+  color: #b06a1f;
+}
+
+.review-section-heading {
+  min-width: 0;
+}
+
+.review-section-heading strong,
+.review-section-heading small {
+  display: block;
+}
+
+.review-section-heading strong {
+  color: #2f3d52;
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.review-section.complete .review-section-heading strong {
+  color: #667385;
+  font-weight: 650;
+}
+
+.review-section-heading small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #8f98a6;
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-section-count {
+  color: #a06a28;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.review-section-count.quiet {
+  color: transparent;
+}
+
+.review-chevron {
+  color: #b0b7c1;
+  transition: transform 140ms ease;
+}
+
+.review-section-toggle[aria-expanded="true"] .review-chevron {
+  transform: rotate(180deg);
+}
+
+.review-fields {
+  padding: 0 16px 6px 42px;
+  background: transparent;
+}
+
+.review-field {
+  padding: 8px 0;
+  border-top: 1px solid #f2f4f7;
+}
+
+.review-field.attention {
+  box-shadow: inset 2px 0 0 #e2b57a;
+  padding-left: 10px;
+}
+
+.review-field.n-a {
+  opacity: 0.55;
+}
+
+.review-field-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.review-field-copy {
+  min-width: 0;
+}
+
+.review-field-label {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.review-field-label strong {
+  color: #6a7688;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.review-field-label span {
+  color: #a4acb8;
+  font-size: 10px;
+}
+
+.review-field.required.attention .review-field-label span {
+  color: #8d734c;
+}
+
+.review-field-copy p {
+  margin: 2px 0 0;
+  color: #314054;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+.review-field.missing .review-field-copy p {
+  color: #9ba3ae;
+}
+
+.review-field-alert,
+.review-field-confirmed {
+  margin-top: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.review-field-alert {
+  color: #9b571b;
+}
+
+.review-field-confirmed {
+  color: #5a7a74;
+}
+
+.review-field-actions {
+  display: flex;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.review-field:hover .review-field-actions,
+.review-field:focus-within .review-field-actions {
+  opacity: 1;
+}
+
+.review-field-actions button {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  color: #748297;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+}
+
+.review-field-actions button:hover:not(:disabled),
+.review-field-actions button:focus-visible {
+  color: #35559b;
+  background: #eef2fa;
+}
+
+.review-field-actions button:disabled {
+  color: #d0d5dc;
+  cursor: not-allowed;
+}
+
+.review-evidence {
+  margin-top: 5px;
+}
+
+.review-evidence summary {
+  width: fit-content;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #8792a1;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+  list-style: none;
+}
+
+.review-evidence summary::-webkit-details-marker {
+  display: none;
+}
+
+.review-evidence > div {
+  margin-top: 6px;
+  padding-left: 10px;
+  border-left: 1px solid #e4e8ee;
+}
+
+.review-evidence-label {
+  display: block;
+  margin-bottom: 2px;
+  color: #97a0ad;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.review-evidence q {
+  display: block;
+  color: #647186;
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.45;
+}
+
+.review-evidence button {
+  margin-top: 6px;
+  padding: 0;
+  color: #536fae;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.review-section-empty,
+.review-empty {
+  color: #8b96a6;
+  font-size: 12px;
+}
+
+.review-section-empty {
+  margin: 0;
+  padding: 8px 0;
+}
+
+.review-empty {
+  padding: 22px 16px;
+  text-align: center;
+}
+
+.review-empty p {
+  margin-bottom: 5px;
+}
+
+.review-empty button {
+  padding: 0;
+  color: #536fae;
+  border: 0;
+  background: transparent;
+  font-weight: 700;
+}
+
+.review-handoff {
+  border-top: 1px solid var(--line-soft);
+  background: transparent;
+}
+
+.review-handoff-heading {
+  padding: 12px 16px 0;
+}
+
+.review-handoff-heading strong,
+.review-handoff-heading span {
+  display: block;
+}
+
+.review-handoff-heading strong {
+  color: #667385;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.review-handoff-heading span {
+  margin-top: 1px;
+  color: #98a1ae;
+  font-size: 11px;
+}
+
+.review-handoff .handoff-options {
+  padding: 8px 16px 14px;
+  border-top: 0;
+  background: transparent;
+  gap: 10px;
+}
+
+.review-handoff .handoff-options > label {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.review-handoff .handoff-select > span,
+.review-handoff .handoff-chat-attach > span {
+  color: #8a94a4;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.review-handoff .handoff-select select {
+  min-height: 30px;
+  border-color: #e2e6ec;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.message-row.evidence-highlight .message-content {
+  background: #f5f8ff;
+  box-shadow: inset 2px 0 0 #6f86c0;
+  transition: background 180ms ease, box-shadow 180ms ease;
+}
+
+@media (max-width: 720px) {
+  .review-milestone {
+    display: grid;
+    gap: 2px;
+  }
+
+  .review-milestone span {
+    text-align: left;
+  }
+
+  .review-section-toggle {
+    grid-template-columns: 18px minmax(0, 1fr) 14px;
+  }
+
+  .review-section-count {
+    display: none;
+  }
+
+  .review-fields {
+    padding-left: 18px;
+  }
+
+  .review-field-actions {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .review-chevron,
+  .review-field-actions,
+  .message-row.evidence-highlight .message-content {
+    transition: none;
+  }
+}
+
 .modal-backdrop {
   position: fixed;
   z-index: 50;

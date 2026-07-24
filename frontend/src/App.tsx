@@ -20,6 +20,7 @@ import type {
   StressTestResult,
   TicketPreview,
   RequirementNode,
+  ValidationState,
 } from './types/intake'
 
 const GREETING: ChatMessage = {
@@ -41,6 +42,11 @@ export function App() {
   const [fieldMetadata, setFieldMetadata] = useState<Record<string, FieldMetadata>>({})
   const [requirements, setRequirements] = useState<RequirementNode[]>([])
   const [ambiguousFields, setAmbiguousFields] = useState<string[]>([])
+  const [completionScore, setCompletionScore] = useState(0)
+  const [readyForTicket, setReadyForTicket] = useState(false)
+  const [validationReady, setValidationReady] = useState(false)
+  const [validationState, setValidationState] = useState<ValidationState>('gathering')
+  const [evidenceFocus, setEvidenceFocus] = useState<{ text: string; requestId: number } | null>(null)
   const [samples, setSamples] = useState<string[]>([])
   const [context, setContext] = useState<ContextSummary | null>(null)
   const [llmStatus, setLlmStatus] = useState<LLMRuntimeStatus | null>(null)
@@ -113,6 +119,10 @@ export function App() {
     setFieldMetadata(response.field_metadata)
     setRequirements(response.requirements_matrix)
     setAmbiguousFields(response.ambiguous_fields)
+    setCompletionScore(response.completion_score)
+    setReadyForTicket(response.ready_for_ticket)
+    setValidationReady(response.validation_ready)
+    setValidationState(response.validation_state)
   }
 
   async function sendMessage(message: string) {
@@ -143,6 +153,11 @@ export function App() {
       setFieldMetadata({})
       setRequirements([])
       setAmbiguousFields([])
+      setCompletionScore(0)
+      setReadyForTicket(false)
+      setValidationReady(false)
+      setValidationState('gathering')
+      setEvidenceFocus(null)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Could not reset the intake.')
     } finally {
@@ -275,16 +290,26 @@ export function App() {
               onReset={resetIntake}
               onSend={sendMessage}
               samples={samples}
+              evidenceFocus={evidenceFocus}
             />
             <InsightSidebar onOpenChange={setInsightsOpen} open={insightsOpen}>
               <div id="explainable-requirements">
                 <RequirementsMatrix
                   ambiguousFields={ambiguousFields}
+                  completionScore={completionScore}
+                  hasDraft={Boolean(ticketBundle)}
                   intake={intake}
                   metadata={fieldMetadata}
                   nodes={requirements}
                   onEdit={updateField}
+                  onViewEvidence={(evidence) => setEvidenceFocus({
+                    text: evidence,
+                    requestId: Date.now(),
+                  })}
+                  readyForTicket={readyForTicket}
                   saving={savingField}
+                  validationReady={validationReady}
+                  validationState={validationState}
                 />
               </div>
               <div id="ticket-draft">

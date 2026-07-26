@@ -10,10 +10,12 @@ The prototype runs outside Armada's Microsoft environment. It never connects to 
 - FastAPI backend with Pydantic validation and CORS for local development
 - Multi-turn, in-memory intake sessions
 - Full canonical PRD-shaped intake state with scenario-specific scoring and field applicability
+- Server-owned turn reconciliation that treats LLM output as a candidate delta and prevents state regression
 - Field-level confidence, source, evidence, and manual confirmation metadata
 - Scenario-specific 1–3 question clarification behavior with rationale and suggested-reply chips
 - Searchable/filterable 13-node Requirements Matrix with inline editing
 - Full timestamped session transcript and optional sanitized `chat.txt` attachment draft
+- Unified public-output sanitizer for ticket summaries, descriptions, transcript exports, and adapter payloads
 - Human validation workflow: gathering → draft ready → pending validation → validated/rejected
 - Static semantic-model knowledge base for `E1_Tickets`, `OpenTickets`, `E2_Linked Tickets`, and `E3_Change Log`
 - Optional Claude (or OpenAI) structured intake with deterministic fallback
@@ -38,7 +40,7 @@ flowchart LR
     CONTRACT -. ENABLE_REAL_JIRA .-> REAL["RealJiraAdapter — optional"]
 ```
 
-The frontend knows only the backend API contract. The intake engine knows only the `TicketGenerator`. The ticket generator depends on the abstract `JiraAdapter`, never directly on the mock implementation.
+The frontend knows only the backend API contract. The intake engine knows only the `TicketGenerator`. The ticket generator depends on the abstract `JiraAdapter`, never directly on the mock implementation. Each chat turn is resolved in one backend-owned pipeline: guardrails → deterministic/model candidates → canonical reconciliation → risk/readiness recalculation → message and draft rendering. LLM prose never becomes the source of truth.
 
 ## Jira integration boundary
 
@@ -55,7 +57,7 @@ Jira integration is isolated behind the adapter contract:
 
 ## Jira ticket-bundle payload contract
 
-The primary handoff contract is a two-ticket blueprint: an ITO intake/request draft and a BIM BI-delivery draft. Requester name and email are written into both descriptions. Unknown Jira configuration is represented explicitly as `To be confirmed by Jira integration`; the prototype does not invent project keys, Issue Type values, relationship types, or enterprise fields.
+The primary handoff contract is a two-ticket blueprint: an ITO intake/request draft and a BIM BI-delivery draft. Requester identity remains available in the canonical intake for authorized human review, while email addresses, secrets, payment identifiers, SSNs, and recognized internal identifiers are redacted from exported descriptions, summaries, transcript attachments, public ticket previews, and the final payload sent to the Jira adapter. Unknown Jira configuration is represented explicitly as `To be confirmed by Jira integration`; the prototype does not invent project keys, Issue Type values, relationship types, or enterprise fields.
 
 For `Self-Service Access`, the same unchanged bundle schema is used: ITO describes the access/source request and BIM describes BI enablement, dataset suitability, and security review. Metrics, display format, and refresh are rendered as `Not applicable — self-service access`. A Jira ticket still does not grant Power BI permission.
 
@@ -219,6 +221,8 @@ Never put API keys in `frontend/.env`, frontend code, browser storage, or source
 
 With `LLM_PROVIDER=claude` and `ANTHROPIC_API_KEY` set, `backend/app/llm_client.py` calls Anthropic Claude with a tool-enforced intake schema. With `LLM_PROVIDER=openai` and `OPENAI_API_KEY`, it uses OpenAI Chat Completions with strict Structured Outputs. If `LLM_PROVIDER` is omitted and only an OpenAI key is configured, OpenAI remains the default. In every cloud-provider path, the server reconciles canonical fields, chooses questions from the active scenario profile, and recomputes scoring, readiness, risks, and validation eligibility. Obvious fields are pre-extracted deterministically before the model call so multi-turn state is stable.
 
+Canonical merge priority is: manually confirmed field → explicit correction → user-provided value → deterministic extraction → model inference. Empty or low-confidence model output cannot erase an established field, and manually confirmed values can only be changed through the Requirements Matrix.
+
 The API and UI make every call observable:
 
 - `llm_provider: claude` or `openai` means the model response passed parsing.
@@ -308,6 +312,7 @@ npm run build
 - Static context is used as directional guidance, not live fact.
 - It does not invent exact ticket counts.
 - Users are prompted to use sanitized or aggregate data, not sensitive/internal records.
+- Public ticket/export projections are sanitized again immediately before crossing the Jira adapter boundary.
 - In-memory session state is lost when the backend restarts; no database is required.
 
 ## Future work

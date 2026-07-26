@@ -7,6 +7,7 @@ import { InsightSidebar } from './components/InsightSidebar'
 import { RequirementsMatrix } from './components/RequirementsMatrix'
 import { StressTestPanel } from './components/StressTestPanel'
 import { TicketPreviewCard } from './components/TicketPreviewCard'
+import { ValidationWorkflowPanel } from './components/ValidationWorkflowPanel'
 import type {
   AttachmentDraft,
   ChatMessage,
@@ -47,6 +48,9 @@ export function App() {
   const [readyForTicket, setReadyForTicket] = useState(false)
   const [validationReady, setValidationReady] = useState(false)
   const [validationState, setValidationState] = useState<ValidationState>('gathering')
+  const [validatorName, setValidatorName] = useState<string | null>(null)
+  const [validatedAt, setValidatedAt] = useState<string | null>(null)
+  const [validationNote, setValidationNote] = useState<string | null>(null)
   const [evidenceFocus, setEvidenceFocus] = useState<{ text: string; requestId: number } | null>(null)
   const [samples, setSamples] = useState<string[]>([])
   const [context, setContext] = useState<ContextSummary | null>(null)
@@ -126,6 +130,9 @@ export function App() {
     setReadyForTicket(response.ready_for_ticket)
     setValidationReady(response.validation_ready)
     setValidationState(response.validation_state)
+    setValidatorName(response.validator_name)
+    setValidatedAt(response.validated_at)
+    setValidationNote(response.validation_note)
   }
 
   async function sendMessage(message: string) {
@@ -160,6 +167,9 @@ export function App() {
       setReadyForTicket(false)
       setValidationReady(false)
       setValidationState('gathering')
+      setValidatorName(null)
+      setValidatedAt(null)
+      setValidationNote(null)
       setEvidenceFocus(null)
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Could not reset the intake.')
@@ -179,6 +189,24 @@ export function App() {
       throw requestError
     } finally {
       setSavingField(false)
+    }
+  }
+
+  async function validationAction(
+    action: 'submit' | 'approve' | 'reject',
+    reviewer?: string,
+    note?: string,
+  ) {
+    setError(null)
+    try {
+      applyResponse(
+        await api.validationAction(sessionId, action, reviewer, note),
+        false,
+      )
+    } catch (requestError) {
+      const message = requestError instanceof Error ? requestError.message : 'Validation action failed.'
+      setError(message)
+      throw requestError
     }
   }
 
@@ -318,6 +346,14 @@ export function App() {
                   validationState={validationState}
                 />
               </div>
+              <ValidationWorkflowPanel
+                note={validationNote}
+                onAction={validationAction}
+                ready={validationReady}
+                state={validationState}
+                validatedAt={validatedAt}
+                validatorName={validatorName}
+              />
               <div id="ticket-draft">
                 <TicketPreviewCard
                   bundle={ticketBundle}

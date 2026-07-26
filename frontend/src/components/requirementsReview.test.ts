@@ -144,6 +144,44 @@ describe('buildAiSummary', () => {
     expect(summary).toContain('frequency and success criteria')
     expect(summary).toContain('before it can move to BI review')
   })
+
+  it('treats optional gaps as refinements once the minimum intake is ready', () => {
+    const summary = buildAiSummary(
+      intake({
+        recipients_or_access_roles: 'Sales managers',
+        display_format: 'Power BI dashboard',
+        metrics_kpis_charts_maps: 'revenue',
+        data_sources: 'Salesforce',
+      }),
+      ['Frequency', 'Risks & Assumptions'],
+      true,
+    )
+
+    expect(summary).toContain('minimum requirements are complete')
+    expect(summary).toContain('optional refinements')
+    expect(summary).not.toContain('before it can move to BI review')
+  })
+
+  it('uses access language for self-service requests', () => {
+    const summary = buildAiSummary(
+      intake({
+        scenario_type: 'Self-Service Access',
+        recipients_or_access_roles: 'Regional analysts',
+        data_sources: 'Finance Certified semantic model',
+        scope_criteria: 'Northeast sales',
+        display_format: 'Not applicable — self-service access',
+        metrics_kpis_charts_maps: 'Not applicable — self-service access',
+        refresh_frequency: 'Not applicable — self-service access',
+      }),
+      [],
+      true,
+    )
+
+    expect(summary).toContain('self-service access to Finance Certified semantic model')
+    expect(summary).toContain('for Northeast sales')
+    expect(summary).not.toContain('tracking Not applicable')
+    expect(summary).not.toContain('refresh')
+  })
 })
 
 describe('section preview labels', () => {

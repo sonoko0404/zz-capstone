@@ -9,6 +9,7 @@ from .intake_config import (
     scenario_profile,
 )
 from .models import FieldMetadata, IntakeData, RequirementNode, TranscriptMessage
+from .sanitization import sanitize_public_text
 
 
 def utc_now() -> str:
@@ -55,6 +56,12 @@ def build_requirements_matrix(
 ) -> list[RequirementNode]:
     nodes: list[RequirementNode] = []
     profile = scenario_profile(intake.scenario_type)
+    required_groups = [list(fields) for _, fields in profile.required_groups]
+    required_fields = {
+        field
+        for group in required_groups
+        for field in group
+    }
     for key, display_name, fields in NODE_DEFINITIONS:
         if key in profile.not_applicable_nodes:
             nodes.append(RequirementNode(
@@ -65,6 +72,8 @@ def build_requirements_matrix(
                 status="N/A",
                 confidence="n/a",
                 source="not_provided",
+                requirement_level="n/a",
+                required_groups=[],
                 filled_fields=0,
                 total_fields=len(fields),
             ))
@@ -109,6 +118,14 @@ def build_requirements_matrix(
             status=status,
             confidence=confidence,
             source=source,
+            requirement_level=(
+                "required"
+                if any(field in required_fields for field in fields)
+                else "optional"
+            ),
+            required_groups=[
+                group for group in required_groups if any(field in fields for field in group)
+            ],
             filled_fields=len(filled),
             total_fields=len(fields),
         ))
@@ -217,14 +234,7 @@ def sanitized_transcript_text(transcript: list[TranscriptMessage]) -> str:
         "",
     ]
     for entry in transcript:
-        content = _sanitize_text(entry.content)
+        content = sanitize_public_text(entry.content)
         stamp = f" [{entry.timestamp}]" if entry.timestamp else ""
         lines.append(f"{entry.role.upper()}{stamp}: {content}")
     return "\n".join(lines).strip() + "\n"
-
-
-def _sanitize_text(value: str) -> str:
-    value = re.sub(r"\b\d{3}-\d{2}-\d{4}\b", "[REDACTED SSN]", value)
-    value = re.sub(r"\b(?:\d[ -]*?){13,16}\b", "[REDACTED CARD NUMBER]", value)
-    value = re.sub(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "[EMAIL STORED IN STRUCTURED INTAKE]", value, flags=re.IGNORECASE)
-    return value[:10_000]

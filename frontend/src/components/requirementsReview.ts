@@ -158,8 +158,11 @@ export function groupRequirementNodes(
         ambiguousFields.includes(field),
       )
       const needsAttention = (
-        state === 'needs-confirmation'
-        || (state === 'missing' && hasUnsatisfiedRequiredGroup)
+        required
+        && (
+          state === 'needs-confirmation'
+          || (state === 'missing' && hasUnsatisfiedRequiredGroup)
+        )
       )
       return {
         field,
@@ -213,6 +216,7 @@ function joinLabels(labels: string[]) {
 export function buildAiSummary(
   intake: IntakeData | null,
   attentionSections: string[],
+  readyForTicket = false,
 ) {
   if (!intake) {
     return 'Describe the business need in the conversation. Requirements will appear here as they are extracted, with gaps called out for review.'
@@ -226,7 +230,13 @@ export function buildAiSummary(
   const purpose = intake.why_report_necessary || intake.decisions_supported
 
   let request: string
-  if (audience && metric && source) {
+  if (intake.scenario_type === 'Self-Service Access') {
+    const role = audience || intake.requester || 'The requested user or role'
+    const dataset = source || 'the requested dataset or semantic model'
+    const scope = intake.scope_criteria || intake.required_fields
+    request = `${role} need self-service access to ${dataset}`
+    if (scope) request += ` for ${scope}`
+  } else if (audience && metric && source) {
     request = `${audience} need a ${output.toLowerCase()} tracking ${metric} from ${source}`
   } else if (audience && purpose) {
     request = `${audience} need a ${output.toLowerCase()} to ${purpose.replace(/[.!]+$/, '').replace(/^to\s+/i, '')}`
@@ -237,14 +247,20 @@ export function buildAiSummary(
   } else {
     request = `This request is for a ${output.toLowerCase()}`
   }
-  if (cadence && !attentionSections.includes('Frequency')) {
+  if (
+    intake.scenario_type !== 'Self-Service Access'
+    && cadence
+    && !attentionSections.includes('Frequency')
+  ) {
     request += ` with ${cadence.toLowerCase()} refresh`
   }
 
   const gapLabels = joinLabels(attentionSections.slice(0, 2))
-  const gap = gapLabels
-    ? ` The request is missing ${gapLabels.toLowerCase()} before it can move to BI review.`
-    : ' The request looks ready for BI review.'
+  const gap = readyForTicket
+    ? ' The minimum requirements are complete; remaining details are optional refinements or human-review checks.'
+    : gapLabels
+      ? ` The request is missing ${gapLabels.toLowerCase()} before it can move to BI review.`
+      : ' The request looks ready for BI review.'
 
   return `${request.replace(/\s+/g, ' ').trim().replace(/[.!]+$/, '')}.${gap}`
 }

@@ -78,7 +78,8 @@ def test_mock_bundle_contains_traceability_and_sanitized_attachment() -> None:
     assert bundle.bim_ticket.draft_ticket_key.startswith("DRAFT-BIM-")
     assert bundle.proposed_relationship.created is False
     assert "Maya Chen" in bundle.ito_ticket.description
-    assert "maya@example.com" in bundle.bim_ticket.description
+    assert "maya@example.com" not in bundle.bim_ticket.description
+    assert "[REDACTED EMAIL]" in bundle.bim_ticket.description
     assert bundle.bim_ticket.issue_type == "To be confirmed by Jira integration"
     assert bundle.ito_ticket.attachments[0].filename == "chat.txt"
     assert "maya@example.com" not in bundle.ito_ticket.attachments[0].content

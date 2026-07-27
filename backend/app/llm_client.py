@@ -457,14 +457,20 @@ class DeterministicMockLLM(IntakeLLMClient):
             rf"\b{cadence_pattern}\s+(?:data\s+)?refresh\b",
             lower,
         )
+        generic_refresh = re.search(
+            rf"\brefresh(?:ed)?\s+{cadence_pattern}\b",
+            lower,
+        )
+        if generic_refresh:
+            prefix = lower[max(0, generic_refresh.start() - 45):generic_refresh.start()]
+            if re.search(r"\b(source|upstream)(?: data| system)?\b", prefix):
+                generic_refresh = None
         if refresh:
             intake.refresh_frequency = refresh.group(1).replace("-", " ").title()
             intake.run_frequency = intake.run_frequency or intake.refresh_frequency
-        elif re.search(rf"\brefresh(?:ed)?\s+{cadence_pattern}\b", lower):
-            value = re.search(rf"\brefresh(?:ed)?\s+{cadence_pattern}\b", lower)
-            if value:
-                intake.refresh_frequency = value.group(1).title()
-                intake.run_frequency = intake.run_frequency or intake.refresh_frequency
+        elif generic_refresh:
+            intake.refresh_frequency = generic_refresh.group(1).title()
+            intake.run_frequency = intake.run_frequency or intake.refresh_frequency
         else:
             deliverable_cadence = re.search(
                 rf"\b{cadence_pattern}\s+(?:\w+\s+)?"
@@ -495,7 +501,8 @@ class DeterministicMockLLM(IntakeLLMClient):
             )
 
         requester = re.search(
-            r"\b(?:requester(?: is|:)?|requested by)\s+"
+            r"\b(?:requester(?: is|:)?|requested by|request comes from|"
+            r"submitted by|on behalf of)\s+"
             r"([A-Z][A-Za-z' -]{1,40}?)"
             r"(?=\s+and\s+(?:the\s+)?(?:owner|validator|approver)\b|[,.;]|$)",
             text,
@@ -504,7 +511,8 @@ class DeterministicMockLLM(IntakeLLMClient):
         if requester:
             intake.requester = requester.group(1).strip()
         owner = re.search(
-            r"\b(?:(?:business |armada |accountable )?owner(?: is|:)?|owned by)\s+"
+            r"\b(?:(?:business |armada |accountable |delivery )?owner(?: is|:)?|"
+            r"owned by|accountable to|business lead(?: is|:)?)\s+"
             r"([A-Z][A-Za-z' -]{1,40}?)"
             r"(?=\s+and\s+[A-Za-z' -]{1,40}\s+(?:will\s+)?validates?\b|[,.;]|$)",
             text,
@@ -626,13 +634,15 @@ class DeterministicMockLLM(IntakeLLMClient):
         if re.search(r"\b(dirty|noisy|duplicate|inconsistent|unreliable|mismatch)\w*\b", lower):
             intake.data_or_system_challenges = "Source data may be dirty, inconsistent, or require reconciliation."
         source_update = re.search(
-            r"\bsource(?: data| system)?\s+"
-            r"(?:updates?|refreshes?|is updated|supports?)\s+"
-            r"(hourly|daily|weekly|monthly|quarterly|real[- ]time)\b",
+            r"\b(?:source|upstream)(?: data| system)?\s+"
+            r"(?:only\s+)?(?:updates?|refreshes?|is (?:only\s+)?(?:updated|refreshed)|"
+            r"supports?|arrives?)\s+"
+            r"(hourly|daily|weekly|monthly|quarterly|real[- ]time|"
+            r"every\s+(?:hour|day|week|month|quarter))\b",
             lower,
         )
         if source_update:
-            source_cadence = source_update.group(1).replace("-", " ").title()
+            source_cadence = _normalize_cadence(source_update.group(1))
             intake.data_or_system_challenges = (
                 f"Source data updates {source_cadence.lower()}."
             )
@@ -644,6 +654,25 @@ class DeterministicMockLLM(IntakeLLMClient):
             ).strip()
             intake.known_constraints = _append_detail(
                 known or None,
+                f"Source update cadence is {source_cadence.lower()}.",
+            )
+        source_arrival = re.search(
+            r"\b(?:source|upstream)(?: data)?\s+arrives\s+"
+            r"(?:once\s+)?(?:every|a|per)\s+(hour|day|week|month|quarter)\b",
+            lower,
+        )
+        if source_arrival:
+            source_cadence = _normalize_cadence(f"every {source_arrival.group(1)}")
+            intake.data_or_system_challenges = (
+                f"Source data updates {source_cadence.lower()}."
+            )
+            intake.known_constraints = _append_detail(
+                re.sub(
+                    r"\s*Source update cadence is unknown\.\s*",
+                    " ",
+                    intake.known_constraints or "",
+                    flags=re.IGNORECASE,
+                ).strip() or None,
                 f"Source update cadence is {source_cadence.lower()}.",
             )
         if re.search(
@@ -1296,6 +1325,18 @@ def _append_detail(existing: str | None, detail: str) -> str:
     if detail.lower() in existing.lower():
         return existing
     return f"{existing.rstrip()} {detail}"
+
+
+def _normalize_cadence(value: str) -> str:
+    normalized = value.replace("-", " ").strip().lower()
+    aliases = {
+        "every hour": "Hourly",
+        "every day": "Daily",
+        "every week": "Weekly",
+        "every month": "Monthly",
+        "every quarter": "Quarterly",
+    }
+    return aliases.get(normalized, normalized.title())
 
 
 def create_llm_client() -> IntakeLLMClient:

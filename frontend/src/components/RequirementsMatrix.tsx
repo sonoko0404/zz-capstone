@@ -151,7 +151,19 @@ export function RequirementsMatrix({
     hasDraft,
   })
   const attentionItemCount = attentionSections.reduce((total, section) => total + section.attentionCount, 0)
-  const aiSummary = buildAiSummary(intake, attentionSections.map((section) => section.label))
+  const aiSummary = buildAiSummary(
+    intake,
+    attentionSections.map((section) => section.label),
+    readyForTicket,
+  )
+  const optionalRefinementSections = useMemo(
+    () => readyForTicket
+      ? sections.filter((section) => section.fields.some(
+        (field) => !field.required && field.state === 'missing',
+      ))
+      : [],
+    [readyForTicket, sections],
+  )
   const attentionKeySignature = attentionSections.map((section) => section.key).join('|')
 
   useEffect(() => {
@@ -243,7 +255,7 @@ export function RequirementsMatrix({
           <strong>{milestone.title}</strong>
           <span>
             {attentionItemCount > 0
-              ? `${attentionItemCount} item${attentionItemCount === 1 ? '' : 's'} still need confirmation`
+              ? `${attentionItemCount} ${attentionItemCount === 1 ? 'item still needs' : 'items still need'} confirmation`
               : milestone.detail}
           </span>
         </div>
@@ -265,6 +277,16 @@ export function RequirementsMatrix({
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {optionalRefinementSections.length > 0 && (
+        <div className="optional-refinements" aria-label="Optional refinements">
+          <span>Optional refinements</span>
+          <p>
+            {optionalRefinementSections.map((section) => section.label).join(' · ')}
+            {' '}can improve delivery planning but do not block the draft.
+          </p>
         </div>
       )}
 
@@ -391,7 +413,7 @@ export function RequirementsMatrix({
                               )}
                             <button
                               aria-label={`Edit ${labelFor(field.field)}`}
-                              disabled={field.state === 'n/a'}
+                              disabled={field.state === 'n/a' || !canConfirmRequirement(validationState)}
                               onClick={() => openEditor(field.field)}
                               title="Edit"
                               type="button"
@@ -456,7 +478,7 @@ export function RequirementsMatrix({
           <span>Jira Issue Type</span>
           <select
             aria-label="Jira issue type"
-            disabled={saving}
+            disabled={saving || !canConfirmRequirement(validationState)}
             onChange={(event) => void onEdit('jira_issue_type', event.target.value || null)}
             value={selectValue('jira_issue_type', intake?.jira_issue_type)}
           >
@@ -470,7 +492,7 @@ export function RequirementsMatrix({
           <span>Priority</span>
           <select
             aria-label="Priority"
-            disabled={saving}
+            disabled={saving || !canConfirmRequirement(validationState)}
             onChange={(event) => void onEdit('priority', event.target.value || null)}
             value={selectValue('priority', intake?.priority)}
           >
@@ -483,6 +505,7 @@ export function RequirementsMatrix({
         <label className="handoff-chat-attach">
           <input
             checked={intake?.include_chat_attachment ?? false}
+            disabled={saving || !canConfirmRequirement(validationState)}
             onChange={(event) => void onEdit('include_chat_attachment', event.target.checked)}
             type="checkbox"
           />

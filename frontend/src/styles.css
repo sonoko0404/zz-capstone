@@ -1197,6 +1197,124 @@ main {
   border-color: #efd0cc;
 }
 
+.validation-panel {
+  margin: 10px 0;
+  padding: 14px;
+}
+
+.validation-panel.locked {
+  border-color: #cfd9e8;
+  background: #fbfcfe;
+}
+
+.validation-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.validation-panel-header span {
+  color: #7c8798;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.validation-panel-header h2 {
+  margin: 2px 0 0;
+  color: #273a58;
+  font-size: 15px;
+}
+
+.validation-panel-header > strong {
+  padding: 4px 7px;
+  color: #466087;
+  border-radius: 5px;
+  background: #eaf0fb;
+  font-size: 8.5px;
+  text-transform: uppercase;
+}
+
+.validation-panel .validation-steps {
+  margin: 12px 3px;
+}
+
+.validation-inputs {
+  display: grid;
+  grid-template-columns: minmax(110px, .7fr) minmax(160px, 1.3fr);
+  gap: 8px;
+}
+
+.validation-inputs label {
+  display: grid;
+  gap: 4px;
+}
+
+.validation-inputs label > span {
+  color: #66758b;
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.validation-inputs input,
+.validation-inputs textarea {
+  width: 100%;
+  padding: 7px 8px;
+  color: #344258;
+  border: 1px solid #dce2ea;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-size: 10px;
+  resize: vertical;
+}
+
+.validation-lock-note,
+.validation-error,
+.validation-status-note {
+  margin: 7px 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: #68768b;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.validation-error {
+  color: #9a3a31;
+}
+
+.optional-refinements {
+  margin: 0 14px 10px;
+  padding: 9px 10px;
+  border: 1px solid #dfe7e7;
+  border-radius: 7px;
+  background: #f7fbfa;
+}
+
+.optional-refinements > span {
+  color: #41645f;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.optional-refinements p {
+  margin: 3px 0 0;
+  color: #6f7d87;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+@media (max-width: 680px) {
+  .validation-inputs {
+    grid-template-columns: 1fr;
+  }
+}
+
 .requirements-panel {
   min-height: 390px;
   overflow: hidden;

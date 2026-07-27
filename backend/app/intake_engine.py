@@ -141,6 +141,27 @@ class IntakeEngine:
                 timestamp=utc_now(),
             ))
             return boundary
+        if state.validation_state in {"pending_validation", "validated"}:
+            locked_message = (
+                "This intake is locked while human validation is pending. Return it for revision "
+                "before changing requirements."
+                if state.validation_state == "pending_validation"
+                else "This intake is locked after human validation. Return it for revision before "
+                "changing requirements."
+            )
+            state.transcript.append(TranscriptMessage(
+                role="assistant",
+                content=locked_message,
+                timestamp=utc_now(),
+            ))
+            return self._response(
+                session_id,
+                state,
+                assistant_message=locked_message,
+                context_used=[],
+                mode="draft_ticket",
+                provider="system",
+            )
 
         previous = state.intake.model_copy(deep=True)
         result = self._llm.analyze(
@@ -206,6 +227,10 @@ class IntakeEngine:
         if field_name not in EDITABLE_FIELDS:
             raise ValueError(f"Field is not editable: {field_name}")
         state = self.get_state(session_id)
+        if state.validation_state in {"pending_validation", "validated"}:
+            raise ValueError(
+                "Return the intake for revision before editing validated requirements."
+            )
         value = self._coerce_field_value(field_name, value)
         payload = state.intake.model_dump()
         payload[field_name] = value

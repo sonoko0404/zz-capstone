@@ -93,18 +93,31 @@ def risk_signal(
 
 
 def detect_live_data_query(message: str) -> bool:
-    """Detect requests for current enterprise facts without blocking refresh requirements."""
+    """Detect explicit requests to query current enterprise facts."""
     lower = _normalized(message).lower()
+    if re.search(
+        r"\b(current fiscal year|current dashboard|daily refresh|"
+        r"future power bi connection|use power bi as (?:the )?display format)\b",
+        lower,
+    ) or re.search(
+        r"\b(create|build|develop|need|request)\b.{0,40}\bpower bi\b"
+        r".{0,30}\b(report|dashboard)\b",
+        lower,
+    ):
+        return False
     current_fact = re.search(
-        r"\b(today|current(?:ly)?|live|right now|as of now|latest|exact(?:ly)?)\b",
+        r"\b(today|currently|live|right now|as of now|latest|"
+        r"at this moment|exactly how many|current (?:count|backlog|tickets?))\b",
         lower,
     )
     query_intent = re.search(
-        r"\b(how many|count|query|identify|find|show|tell me|busiest|assigned|backlog)\b",
+        r"\b(how many|count|query|look up|retrieve|fetch|tell me|"
+        r"show me|which assignee|who is assigned|busiest assignee)\b",
         lower,
     )
     enterprise_subject = re.search(
-        r"\b(power bi|data agent|opentickets|backlog|bim tickets?|jira|assignee|ticket counts?)\b",
+        r"\b(power bi data agent|data agent|opentickets|active backlog|"
+        r"bim tickets?|jira tickets?|assignee|ticket counts?)\b",
         lower,
     )
     return bool(current_fact and query_intent and enterprise_subject)
@@ -196,7 +209,45 @@ def reconcile_turn(
     risk_signals: dict[str, RiskSignal],
 ) -> ReconciliationResult:
     """Make the server-owned canonical decision for a completed LLM turn."""
-    final = candidate.model_copy(deep=True)
+    # The model proposes a delta. Canonical state starts from the previous
+    # session and accepts only non-empty, non-ambiguous candidate changes.
+    final = previous.model_copy(deep=True)
+    model_updates = list(model_metadata_updates)
+    updates_by_field = {
+        update.field: update
+        for update in model_updates
+        if update.field in EDITABLE_FIELDS
+    }
+    for field_name in EDITABLE_FIELDS:
+        candidate_value = getattr(candidate, field_name, None)
+        previous_value = getattr(previous, field_name, None)
+        if candidate_value == previous_value or not has_value(candidate_value):
+            continue
+        update = updates_by_field.get(field_name)
+        if update is None:
+            # A structured value without per-field evidence is only an LLM
+            # guess. Deterministic extraction and compliant cloud responses
+            # both provide metadata for every proposed change.
+            continue
+        # Low-confidence/inferred candidates may fill a blank slot so the UI
+        # can surface them for confirmation, but may never replace a stable
+        # existing fact. Explicit user-provided values can replace an
+        # unconfirmed value; user-confirmed protection is applied below.
+        if (
+            has_value(previous_value)
+            and (
+                update.source in {"inferred", "needs_confirmation"}
+                or update.confidence == "low"
+            )
+        ):
+            continue
+        if (
+            has_value(previous_value)
+            and update.source == "user_provided"
+            and not _candidate_change_is_evidenced(field_name, candidate_value, message)
+        ):
+            continue
+        setattr(final, field_name, candidate_value)
     signals = dict(risk_signals)
     signals.pop("live_data_boundary", None)
     signals.pop("multi_request", None)
@@ -212,10 +263,11 @@ def reconcile_turn(
     elif final.scenario_type == "Self-Service Access":
         final.request_type = "other"
         final.project_type_hint = "BIM"
-        final.display_format = None
-        final.metrics_kpis_charts_maps = None
-        final.refresh_frequency = None
-        final.run_frequency = None
+        _apply_self_service_rules(message, final, correction)
+        final.display_format = "Not applicable — self-service access"
+        final.metrics_kpis_charts_maps = "Not applicable — self-service access"
+        final.refresh_frequency = "Not applicable — self-service access"
+        final.run_frequency = "Not applicable — self-service access"
     elif final.scenario_type == "Enhancement Request" and not final.request_type:
         final.request_type = "other"
 
@@ -272,7 +324,6 @@ def reconcile_turn(
         if field_name not in conflicts and field_name not in rejected_changes:
             signals.pop(f"conflict:{field_name}", None)
 
-    model_updates = list(model_metadata_updates)
     model_update_fields = {
         update.field
         for update in model_updates
@@ -975,6 +1026,103 @@ def _apply_rls_role_rules(message: str, intake: IntakeData, correction: Correcti
     })
 
 
+def _apply_self_service_rules(
+    message: str,
+    intake: IntakeData,
+    correction: CorrectionPlan,
+) -> None:
+    """Map access-request language into the existing public intake schema."""
+    text = _normalized(message)
+    lower = text.lower()
+
+    role_match = re.search(
+        r"(?:^|[.;]\s*)([A-Za-z][A-Za-z0-9 &'/-]{1,70}?)\s+"
+        r"(?:need|needs|require|requires)\s+"
+        r"(?:(?:ongoing|temporary|permanent|read[- ]only)\s+)*access\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not role_match:
+        role_match = re.search(
+            r"\baccess\s+(?:for|to be granted to)\s+([^.;,]+)",
+            text,
+            re.IGNORECASE,
+        )
+    if role_match:
+        intake.recipients_or_access_roles = role_match.group(1).strip()
+        correction.explicit_fields.add("recipients_or_access_roles")
+
+    dataset_match = re.search(
+        r"\b(?:access\s+to|dataset(?: is|:)?|semantic model(?: is|:)?)\s+"
+        r"(?:the\s+)?([^.;,]{2,90}?(?:semantic model|dataset))\b",
+        text,
+        re.IGNORECASE,
+    )
+    if dataset_match:
+        value = dataset_match.group(1).strip()
+        if value.lower() not in {"power bi semantic model", "semantic model", "dataset"}:
+            intake.data_sources = value
+        elif not intake.data_sources:
+            intake.data_sources = value
+        correction.explicit_fields.add("data_sources")
+
+    purpose_match = re.search(
+        r"\b(?:business purpose(?: is|:)?|so (?:i|we|they) can|in order to)\s+"
+        r"([^.;]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if purpose_match:
+        intake.why_report_necessary = purpose_match.group(1).strip()
+        correction.explicit_fields.add("why_report_necessary")
+
+    scope_match = re.search(
+        r"\b(?:data|access)\s+scope(?: is|:)?\s+([^.;]+)",
+        text,
+        re.IGNORECASE,
+    )
+    if scope_match:
+        intake.scope_criteria = scope_match.group(1).strip()
+        correction.explicit_fields.add("scope_criteria")
+
+    approver_match = re.search(
+        r"\b(?:security|data)?\s*(?:approval owner|approver)"
+        r"(?: is|:)?\s+([A-Z][A-Za-z' -]{1,60})(?=[,.;]|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if approver_match:
+        intake.armada_owner = approver_match.group(1).strip()
+        intake.accuracy_owner_or_validator = (
+            intake.accuracy_owner_or_validator or approver_match.group(1).strip()
+        )
+        correction.explicit_fields.update({
+            "armada_owner",
+            "accuracy_owner_or_validator",
+        })
+
+    duration_match = re.search(
+        r"\b(?:access\s+)?(?:for|lasting)\s+"
+        r"(\d+\s+(?:days?|weeks?|months?)|ongoing|permanent(?:ly)?)\b",
+        lower,
+    ) or re.search(
+        r"\b(ongoing|permanent|temporary)(?:\s+read[- ]only)?\s+access\b",
+        lower,
+    )
+    if duration_match:
+        duration = duration_match.group(1)
+        detail = f"Access duration: {duration}."
+        if detail.lower() not in (intake.known_constraints or "").lower():
+            intake.known_constraints = "; ".join(
+                filter(None, [intake.known_constraints, detail])
+            )
+        correction.explicit_fields.add("known_constraints")
+
+    if re.search(r"\bread[- ]only\b", lower):
+        intake.row_level_security = "Required: read-only access for the approved role."
+        correction.explicit_fields.add("row_level_security")
+
+
 def _sanitize_deliverable_sources(message: str, previous: IntakeData, intake: IntakeData) -> None:
     if not intake.data_sources:
         return
@@ -1052,6 +1200,71 @@ def _source_cadence(challenges: str) -> str | None:
         challenges,
     )
     return match.group(1).replace("-", " ") if match else None
+
+
+def _candidate_change_is_evidenced(
+    field_name: str,
+    candidate_value: Any,
+    message: str,
+) -> bool:
+    """Require current-turn evidence before replacing an established fact."""
+    lower = _normalized(message).lower()
+    if re.search(
+        r"\b(correction|instead(?: of)?|actually|only need|change(?: it)? to|"
+        r"switch(?: it)? to)\b",
+        lower,
+    ):
+        return True
+    if isinstance(candidate_value, bool):
+        if field_name == "requester_email_unavailable":
+            return bool(re.search(r"\b(email unavailable|no email|email unknown)\b", lower))
+        if field_name == "include_chat_attachment":
+            return bool(re.search(r"\b(include|attach).{0,25}(chat|transcript)\b", lower))
+        return False
+    if isinstance(candidate_value, list):
+        return all(str(item).lower() in lower for item in candidate_value)
+
+    value = _normalized(str(candidate_value)).lower().strip(" .")
+    if value and value in lower:
+        return True
+    if field_name == "data_sources":
+        sources = [
+            part.strip().lower()
+            for part in re.split(r"[,;]", value)
+            if part.strip()
+        ]
+        return bool(sources) and all(source in lower for source in sources)
+    if field_name in {"refresh_frequency", "run_frequency"}:
+        cadence = value.replace("-", " ")
+        return cadence in lower or (
+            cadence == "daily" and "every morning" in lower
+        )
+    if field_name == "request_type":
+        aliases = {
+            "data extract": ("extract", "excel file"),
+            "metric analysis": ("analyze", "analyse", "understand why"),
+            "bug/fix": ("bug", "fix", "broken", "incorrect", "wrong"),
+        }
+        return any(alias in lower for alias in aliases.get(value, (value,)))
+    if field_name == "display_format":
+        return any(
+            token in lower
+            for token in ("power bi", "dashboard", "report", "excel", "extract")
+        )
+    if field_name == "row_level_security":
+        return bool(re.search(r"\b(row[- ]level security|rls|access rules?|read[- ]only)\b", lower))
+    if field_name in {"known_constraints", "data_or_system_challenges"}:
+        return bool(re.search(
+            r"\b(source|upstream|cadence|refresh|constraint|dirty|duplicate|"
+            r"inconsistent|opentickets|assigned group|resolved|reconciliation)\b",
+            lower,
+        ))
+    if field_name in {"scope_criteria", "dependencies"}:
+        return bool(re.search(
+            r"\b(scope|filter|region|mvp|phase|dependency|data scope|access scope)\b",
+            lower,
+        ))
+    return False
 
 
 def _cadence_rank(value: str) -> int:

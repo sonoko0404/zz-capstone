@@ -100,6 +100,8 @@ class RequirementNode(BaseModel):
         "not_provided",
         "user_confirmed",
     ]
+    requirement_level: Literal["required", "optional", "n/a"] = "optional"
+    required_groups: list[list[str]] = Field(default_factory=list)
     filled_fields: int
     total_fields: int
 

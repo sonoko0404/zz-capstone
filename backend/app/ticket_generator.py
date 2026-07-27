@@ -16,6 +16,7 @@ from .models import (
     TicketRelationshipDraft,
     TranscriptMessage,
 )
+from .sanitization import sanitize_model
 
 
 def _items(value: str | None, fallback: str = "To be confirmed") -> list[str]:
@@ -27,12 +28,13 @@ def _items(value: str | None, fallback: str = "To be confirmed") -> list[str]:
 
 def redact_bundle_preview(preview: JiraTicketBundlePreview) -> JiraTicketBundlePreview:
     """Strip attachment bodies from API-facing ticket previews."""
-    return preview.model_copy(update={
-        "ito_ticket": preview.ito_ticket.model_copy(update={
-            "attachments": [item.public_view() for item in preview.ito_ticket.attachments],
+    sanitized = sanitize_model(preview)
+    return sanitized.model_copy(update={
+        "ito_ticket": sanitized.ito_ticket.model_copy(update={
+            "attachments": [item.public_view() for item in sanitized.ito_ticket.attachments],
         }),
-        "bim_ticket": preview.bim_ticket.model_copy(update={
-            "attachments": [item.public_view() for item in preview.bim_ticket.attachments],
+        "bim_ticket": sanitized.bim_ticket.model_copy(update={
+            "attachments": [item.public_view() for item in sanitized.bim_ticket.attachments],
         }),
     })
 
@@ -125,7 +127,7 @@ class TicketGenerator:
         if "ticket" in (intake.data_sources or "").lower() or "jira" in (intake.data_sources or "").lower():
             notes.append("Use E1_Tickets for historical ticket-level analysis and E3_Change Log for workflow/bottleneck analysis.")
 
-        return TicketPayload(
+        return sanitize_model(TicketPayload(
             title=title,
             project_category=project,
             source_request_category=source_category,
@@ -157,10 +159,10 @@ class TicketGenerator:
             suggested_priority=intake.priority or "Medium",
             linked_ticket_suggestion=linked,
             implementation_notes=notes,
-        )
+        ))
 
     def generate(self, intake: IntakeData) -> TicketPreview:
-        payload = self.build_payload(intake)
+        payload = sanitize_model(self.build_payload(intake))
         result = self._jira_adapter.create_ticket(payload)
         # The adapter owns external-system behavior. The generator only maps the
         # stable result into the frontend's stable draft preview contract.
@@ -290,7 +292,7 @@ class TicketGenerator:
                 "Prototype note: no access was granted and no enterprise permission was changed.",
             ])
 
-        return JiraTicketBundlePayload(
+        return sanitize_model(JiraTicketBundlePayload(
             ito_ticket=JiraTicketDraftPayload(
                 project_category="ITO",
                 issue_type="To be confirmed by Jira integration",
@@ -311,7 +313,7 @@ class TicketGenerator:
             ),
             proposed_relationship=TicketRelationshipDraft(),
             validation_state=validation_state,
-        )
+        ))
 
     def generate_bundle(
         self,
@@ -320,12 +322,12 @@ class TicketGenerator:
         validation_state: str,
         extra_attachments: list[AttachmentDraft] | None = None,
     ) -> JiraTicketBundlePreview:
-        payload = self.build_bundle_payload(
+        payload = sanitize_model(self.build_bundle_payload(
             intake,
             transcript,
             validation_state,
             extra_attachments=extra_attachments,
-        )
+        ))
         result = self._jira_adapter.create_ticket_bundle(payload)
         return redact_bundle_preview(JiraTicketBundlePreview(
             ito_ticket=JiraTicketDraftPreview(
